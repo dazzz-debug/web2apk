@@ -1,0 +1,180 @@
+name: Web2APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: "Website URL"
+        required: true
+        type: string
+      app_name:
+        description: "Application name"
+        required: true
+        type: string
+      icon_url:
+        description: "Icon URL (PNG/JPG), optional"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Create Flutter project
+        run: |
+          flutter create --project-name web2apk --org com.web2apk web2apk
+
+      - name: Configure Web2APK
+        env:
+          WEB_URL: ${{ inputs.web_url }}
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          cd web2apk
+
+          cat > pubspec.yaml <<'EOF'
+          name: web2apk
+          description: Web2APK application
+          publish_to: "none"
+
+          version: 1.0.0+1
+
+          environment:
+            sdk: ">=3.0.0 <4.0.0"
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            webview_flutter: ^4.10.0
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+
+          flutter:
+            uses-material-design: true
+          EOF
+
+          cat > lib/main.dart <<'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          void main() {
+            WidgetsFlutterBinding.ensureInitialized();
+            runApp(const Web2APK());
+          }
+
+          class Web2APK extends StatelessWidget {
+            const Web2APK({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                title: 'APP_NAME_PLACEHOLDER',
+                theme: ThemeData(
+                  useMaterial3: true,
+                ),
+                home: const WebPage(),
+              );
+            }
+          }
+
+          class WebPage extends StatefulWidget {
+            const WebPage({super.key});
+
+            @override
+            State<WebPage> createState() => _WebPageState();
+          }
+
+          class _WebPageState extends State<WebPage> {
+            late final WebViewController controller;
+
+            @override
+            void initState() {
+              super.initState();
+
+              controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onWebResourceError: (error) {},
+                  ),
+                )
+                ..loadRequest(
+                  Uri.parse('WEB_URL_PLACEHOLDER'),
+                );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: SafeArea(
+                  child: WebViewWidget(controller: controller),
+                ),
+              );
+            }
+          }
+          EOF
+
+          sed -i "s|APP_NAME_PLACEHOLDER|${APP_NAME}|g" lib/main.dart
+          sed -i "s|WEB_URL_PLACEHOLDER|${WEB_URL}|g" lib/main.dart
+
+          sed -i 's/android:label="[^"]*"/android:label="'"${APP_NAME}"'"/' \
+            android/app/src/main/AndroidManifest.xml
+
+      - name: Configure Android Internet permission
+        run: |
+          cd web2apk
+
+          sed -i '/<manifest/a\    <uses-permission android:name="android.permission.INTERNET"/>' \
+            android/app/src/main/AndroidManifest.xml
+
+      - name: Download icon
+        if: ${{ inputs.icon_url != '' }}
+        env:
+          ICON_URL: ${{ inputs.icon_url }}
+        run: |
+          cd web2apk
+          mkdir -p assets
+          curl -L --fail "$ICON_URL" -o assets/icon.png
+
+      - name: Install dependencies
+        run: |
+          cd web2apk
+          flutter pub get
+
+      - name: Build APK
+        run: |
+          cd web2apk
+          flutter build apk --release
+
+      - name: Rename APK
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          mkdir -p output
+          cp web2apk/build/app/outputs/flutter-apk/app-release.apk \
+            "output/${APP_NAME}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: web2apk-${{ github.run_number }}
+          path: output/*.apk
+          retention-days: 7
