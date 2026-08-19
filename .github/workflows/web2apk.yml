@@ -1,0 +1,161 @@
+name: Web2APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: "Website URL"
+        required: true
+        type: string
+      app_name:
+        description: "Application name"
+        required: true
+        type: string
+      icon_url:
+        description: "Icon URL (PNG/JPG)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Create Flutter project
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          WEB_URL: ${{ inputs.web_url }}
+          ICON_URL: ${{ inputs.icon_url }}
+        run: |
+          flutter create --project-name web2apk --org com.dazzz.web2apk web2apk
+          cd web2apk
+          flutter pub add webview_flutter
+
+          python3 - <<'PY'
+          import os, json, re
+          from pathlib import Path
+
+          app_name = os.environ["APP_NAME"].strip() or "Web2APK"
+          url = os.environ["WEB_URL"].strip()
+
+          if not re.match(r"^https?://", url, re.I):
+              raise SystemExit("web_url harus diawali http:// atau https://")
+
+          dart = """import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+void main() {
+  runApp(const Web2ApkApp());
+}
+
+class Web2ApkApp extends StatefulWidget {
+  const Web2ApkApp({super.key});
+
+  @override
+  State<Web2ApkApp> createState() => _Web2ApkAppState();
+}
+
+class _Web2ApkAppState extends State<Web2ApkApp> {
+  late final WebViewController controller;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..loadRequest(Uri.parse(%s));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: %s,
+      home: Scaffold(
+        body: SafeArea(
+          child: WebViewWidget(controller: controller),
+        ),
+      ),
+    );
+  }
+}
+""" % (json.dumps(url), json.dumps(app_name))
+
+          Path("lib/main.dart").write_text(dart)
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text()
+          text = re.sub(
+              r'android:label="[^"]*"',
+              'android:label="@string/app_name"',
+              text,
+              count=1,
+          )
+          manifest.write_text(text)
+
+          safe_name = (
+              app_name.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;")
+          )
+          strings = Path("android/app/src/main/res/values/strings.xml")
+          strings.parent.mkdir(parents=True, exist_ok=True)
+          strings.write_text(
+              "<resources>\n"
+              f'    <string name="app_name">{safe_name}</string>\n'
+              "</resources>\n"
+          )
+          PY
+
+          if [ -n "$ICON_URL" ]; then
+            python3 - <<'PY'
+            import os, urllib.request
+            from pathlib import Path
+
+            url = os.environ["ICON_URL"]
+            if not url.lower().startswith(("http://", "https://")):
+                raise SystemExit("icon_url harus berupa URL http/https")
+
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                Path("icon_source").write_bytes(r.read())
+            PY
+
+            flutter pub add --dev flutter_launcher_icons
+
+            cat >> pubspec.yaml <<'EOF'
+
+          flutter_launcher_icons:
+            android: true
+            ios: false
+            image_path: icon_source
+            min_sdk_android: 21
+          EOF
+
+            dart run flutter_launcher_icons
+          fi
+
+      - name: Build release APK
+        working-directory: web2apk
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: web2apk-apk
+          path: web2apk/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
