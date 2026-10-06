@@ -1,10 +1,10 @@
-name: Build Flutter APK
+name: SCBUILD DAZZ
 
 on:
   workflow_dispatch:
     inputs:
       jobId:
-        description: "Unique build/job ID"
+        description: "Build Job ID"
         required: true
         type: string
 
@@ -15,13 +15,12 @@ on:
         type: string
 
       payload:
-        description: "JSON build payload"
+        description: "Build payload JSON"
         required: true
         type: string
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: scbuild-${{ inputs.jobId }}
@@ -29,6 +28,7 @@ concurrency:
 
 jobs:
   build:
+    name: Build APK
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -39,68 +39,17 @@ jobs:
 
     steps:
 
-      # ============================================================
+      # ==========================================================
       # CHECKOUT
-      # ============================================================
+      # ==========================================================
 
       - name: Checkout
         uses: actions/checkout@v4
 
 
-      # ============================================================
-      # PARSE PAYLOAD
-      # ============================================================
-
-      - name: Parse payload
-        id: payload
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          import json
-          import os
-
-          data = json.loads(os.environ["PAYLOAD"])
-
-          mode = str(data.get("mode", "zip")).lower()
-          build_type = str(data.get("buildType", "release")).lower()
-          url = str(data.get("url", "")).strip()
-          app_name = str(data.get("appName", "Web2APK")).strip()
-
-          if mode not in ("zip", "url"):
-              raise SystemExit(f"Unsupported mode: {mode}")
-
-          if build_type not in ("release", "debug"):
-              build_type = "release"
-
-          if not url:
-              raise SystemExit("payload.url is required")
-
-          safe = "".join(
-              c if c.isalnum() else "_"
-              for c in app_name
-          )
-
-          safe = safe.strip("_") or "web2apk"
-
-          if safe[0].isdigit():
-              safe = "app_" + safe
-
-          safe = safe[:40].lower()
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"mode={mode}\n")
-              f.write(f"build_type={build_type}\n")
-              f.write(f"url={url}\n")
-              f.write(f"app_name={app_name}\n")
-              f.write(f"project_name={safe}\n")
-          PY
-
-
-      # ============================================================
-      # SYSTEM
-      # ============================================================
+      # ==========================================================
+      # SYSTEM DEPENDENCIES
+      # ==========================================================
 
       - name: Install dependencies
         shell: bash
@@ -118,9 +67,9 @@ jobs:
             file
 
 
-      # ============================================================
+      # ==========================================================
       # JAVA 17
-      # ============================================================
+      # ==========================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -129,9 +78,9 @@ jobs:
           java-version: "17"
 
 
-      # ============================================================
+      # ==========================================================
       # FLUTTER
-      # ============================================================
+      # ==========================================================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -139,26 +88,129 @@ jobs:
           channel: stable
           cache: true
 
-
-      - name: Environment
+      - name: Check environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "========== FLUTTER =========="
+          echo "=========================================="
+          echo "FLUTTER"
+          echo "=========================================="
+
           flutter --version
 
-          echo "========== JAVA =========="
+          echo ""
+          echo "=========================================="
+          echo "JAVA"
+          echo "=========================================="
+
           java -version
 
 
-      # ============================================================
-      # DOWNLOAD SOURCE
-      # ============================================================
+      # ==========================================================
+      # PARSE PAYLOAD
+      # ==========================================================
+
+      - name: Parse payload
+        id: payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          raw = os.environ["PAYLOAD"]
+
+          try:
+              data = json.loads(raw)
+          except Exception as e:
+              raise SystemExit(
+                  f"Invalid payload JSON: {e}"
+              )
+
+          mode = str(
+              data.get("mode", "zip")
+          ).lower()
+
+          url = str(
+              data.get("url", "")
+          ).strip()
+
+          build_type = str(
+              data.get("buildType", "release")
+          ).lower()
+
+          app_name = str(
+              data.get("appName", "Web2APK")
+          ).strip()
+
+          if mode not in ("zip", "url"):
+              raise SystemExit(
+                  f"Unsupported mode: {mode}"
+              )
+
+          if build_type not in ("release", "debug"):
+              build_type = "release"
+
+          if not url:
+              raise SystemExit(
+                  "payload.url is required"
+              )
+
+          safe = "".join(
+              c if c.isalnum() else "_"
+              for c in app_name
+          )
+
+          safe = safe.strip("_")
+
+          if not safe:
+              safe = "web2apk"
+
+          if safe[0].isdigit():
+              safe = "app_" + safe
+
+          safe = safe[:40].lower()
+
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a"
+          ) as f:
+
+              f.write(
+                  f"mode={mode}\n"
+              )
+
+              f.write(
+                  f"url={url}\n"
+              )
+
+              f.write(
+                  f"build_type={build_type}\n"
+              )
+
+              f.write(
+                  f"app_name={app_name}\n"
+              )
+
+              f.write(
+                  f"project_name={safe}\n"
+              )
+
+          print("Mode:", mode)
+          print("Build:", build_type)
+          print("App:", app_name)
+          PY
+
+
+      # ==========================================================
+      # DOWNLOAD ZIP
+      # ==========================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
-
         env:
           SOURCE_URL: ${{ steps.payload.outputs.url }}
 
@@ -169,6 +221,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
+          echo "Downloading source..."
+
           curl \
             -fL \
             --retry 5 \
@@ -178,16 +232,23 @@ jobs:
             "$SOURCE_URL" \
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
-          test -s "$GITHUB_WORKSPACE/input/source.zip"
+          test -s \
+            "$GITHUB_WORKSPACE/input/source.zip"
+
+          echo "Extracting source..."
 
           unzip -q \
             "$GITHUB_WORKSPACE/input/source.zip" \
             -d "$GITHUB_WORKSPACE/project"
 
+          echo ""
+          echo "Searching pubspec.yaml..."
+
           ROOT="$(
-            find "$GITHUB_WORKSPACE/project" \
-              -name pubspec.yaml \
+            find \
+              "$GITHUB_WORKSPACE/project" \
               -type f \
+              -name "pubspec.yaml" \
               -print \
               -quit |
               xargs -r dirname
@@ -198,14 +259,17 @@ jobs:
             exit 1
           fi
 
-          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo ""
+          echo "PROJECT ROOT:"
+          echo "$ROOT"
 
-          echo "PROJECT_ROOT=$ROOT"
+          echo "PROJECT_ROOT=$ROOT" \
+            >> "$GITHUB_ENV"
 
 
-      # ============================================================
+      # ==========================================================
       # URL MODE
-      # ============================================================
+      # ==========================================================
 
       - name: Create Web2APK project
         if: steps.payload.outputs.mode == 'url'
@@ -225,7 +289,8 @@ jobs:
             --platforms=android \
             "$PROJECT_NAME"
 
-          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/$PROJECT_NAME" \
+            >> "$GITHUB_ENV"
 
           cd "$GITHUB_WORKSPACE/$PROJECT_NAME"
 
@@ -238,8 +303,17 @@ jobs:
           url = os.environ["TARGET_URL"]
           app = os.environ["APP_NAME"]
 
-          url = url.replace("\\", "\\\\").replace("'", "\\'")
-          app = app.replace("\\", "\\\\").replace("'", "\\'")
+          url = (
+              url
+              .replace("\\", "\\\\")
+              .replace("'", "\\'")
+          )
+
+          app = (
+              app
+              .replace("\\", "\\\\")
+              .replace("'", "\\'")
+          )
 
           Path("lib/main.dart").write_text(
               f"""
@@ -259,6 +333,7 @@ jobs:
           }}
 
           class _WebAppState extends State<WebApp> {{
+
             late final WebViewController controller;
 
             @override
@@ -267,10 +342,10 @@ jobs:
 
               controller = WebViewController()
                 ..setJavaScriptMode(
-                  JavaScriptMode.unrestricted
+                  JavaScriptMode.unrestricted,
                 )
                 ..loadRequest(
-                  Uri.parse('{url}')
+                  Uri.parse('{url}'),
                 );
             }}
 
@@ -295,23 +370,156 @@ jobs:
           PY
 
 
-      # ============================================================
-      # PREPARE GRADLE
-      # ============================================================
+      # ==========================================================
+      # ANDROID COMPATIBILITY FIX
+      # ==========================================================
 
-      - name: Prepare Gradle
+      - name: Fix Android AGP compatibility
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
 
-          mkdir -p android/gradle/wrapper
+          echo "=========================================="
+          echo "ANDROID COMPATIBILITY FIX"
+          echo "=========================================="
 
-          # --------------------------------------------------------
-          # Keep the project's AGP configuration.
-          # Only make Gradle wrapper compatible.
-          # --------------------------------------------------------
+          mkdir -p \
+            android/gradle/wrapper
+
+
+          # ------------------------------------------------------
+          # IMPORTANT
+          #
+          # Flutter sedang mendeteksi AGP 9.
+          # Kita downgrade AGP ke 8.7.3.
+          # Gradle 8.11.1 dipakai supaya kompatibel.
+          # ------------------------------------------------------
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("android")
+
+          files = []
+
+          for pattern in [
+              "*.gradle",
+              "*.gradle.kts",
+              "*.toml",
+          ]:
+              files.extend(
+                  root.rglob(pattern)
+              )
+
+          for p in files:
+
+              try:
+                  text = p.read_text(
+                      encoding="utf-8",
+                      errors="replace"
+                  )
+              except Exception:
+                  continue
+
+              original = text
+
+
+              # ------------------------------------------------
+              # plugins DSL
+              # ------------------------------------------------
+
+              text = re.sub(
+                  r'(\bid\s*\(\s*["\']com\.android\.application["\']\s*\)\s*version\s*["\'])9\.[^"\']+(["\'])',
+                  r'\g<1>8.7.3\g<2>',
+                  text
+              )
+
+              text = re.sub(
+                  r'(\bid\s*\(\s*["\']com\.android\.library["\']\s*\)\s*version\s*["\'])9\.[^"\']+(["\'])',
+                  r'\g<1>8.7.3\g<2>',
+                  text
+              )
+
+
+              # ------------------------------------------------
+              # old plugins syntax
+              # ------------------------------------------------
+
+              text = re.sub(
+                  r'(\bid\s+["\']com\.android\.application["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
+                  r'\g<1>8.7.3\g<2>',
+                  text
+              )
+
+              text = re.sub(
+                  r'(\bid\s+["\']com\.android\.library["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
+                  r'\g<1>8.7.3\g<2>',
+                  text
+              )
+
+
+              # ------------------------------------------------
+              # buildscript dependency
+              # ------------------------------------------------
+
+              text = re.sub(
+                  r'(com\.android\.tools\.build:gradle:)\s*9\.[0-9.]+',
+                  r'\g<1>8.7.3',
+                  text
+              )
+
+
+              # ------------------------------------------------
+              # version catalog
+              # ------------------------------------------------
+
+              text = re.sub(
+                  r'(\bagp\s*=\s*["\'])9\.[^"\']+(["\'])',
+                  r'\g<1>8.7.3\g<2>',
+                  text
+              )
+
+              text = re.sub(
+                  r'(\bandroidGradlePlugin\s*=\s*["\'])9\.[^"\']+(["\'])',
+                  r'\g<1>8.7.3\g<2>',
+                  text
+              )
+
+
+              if text != original:
+
+                  p.write_text(
+                      text,
+                      encoding="utf-8"
+                  )
+
+                  print(
+                      "FIXED AGP:",
+                      p
+                  )
+
+          PY
+
+
+          # ======================================================
+          # GRADLE PROPERTIES
+          # ======================================================
+
+          cat > android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4G -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.enableJetifier=true
+          android.newDsl=false
+          android.builtInKotlin=false
+          EOF
+
+
+          # ======================================================
+          # GRADLE WRAPPER
+          # ======================================================
 
           cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
           distributionBase=GRADLE_USER_HOME
@@ -324,97 +532,17 @@ jobs:
           EOF
 
 
-          # --------------------------------------------------------
-          # gradle.properties
-          # --------------------------------------------------------
+          # ======================================================
+          # DOWNLOAD GRADLE
+          # ======================================================
 
-          touch android/gradle.properties
+          GRADLE_DIR="$RUNNER_TEMP/gradle-fixed"
 
-          python3 - <<'PY'
-          from pathlib import Path
+          if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
 
-          p = Path("android/gradle.properties")
+            rm -rf "$GRADLE_DIR"
 
-          text = p.read_text(
-              encoding="utf-8",
-              errors="replace"
-          )
-
-          text = text.replace("\r\n", "\n")
-          text = text.replace("\r", "\n")
-
-          # Fix accidental concatenation only.
-          text = text.replace(
-              "falseandroid.newDsl=false",
-              "false\nandroid.newDsl=false"
-          )
-
-          text = text.replace(
-              "falseandroid.builtInKotlin=false",
-              "false\nandroid.builtInKotlin=false"
-          )
-
-          # Remove duplicate values.
-          lines = []
-
-          for line in text.split("\n"):
-              stripped = line.strip()
-
-              if stripped.startswith("android.newDsl="):
-                  continue
-
-              if stripped.startswith("android.builtInKotlin="):
-                  continue
-
-              lines.append(line)
-
-          while lines and not lines[-1].strip():
-              lines.pop()
-
-          # Flutter's error explicitly asks for opt-out.
-          lines.append("android.newDsl=false")
-          lines.append("android.builtInKotlin=false")
-
-          p.write_text(
-              "\n".join(lines) + "\n",
-              encoding="utf-8"
-          )
-          PY
-
-
-          # --------------------------------------------------------
-          # Create wrapper launcher if source ZIP has no gradlew.
-          # --------------------------------------------------------
-
-          if [ ! -f android/gradlew ]; then
-
-            cat > android/gradlew <<'EOF'
-          #!/bin/sh
-
-          set -e
-
-          GRADLE_HOME="${RUNNER_TEMP}/gradle-fixed"
-
-          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
-            echo "Gradle 8.11.1 belum tersedia."
-            exit 1
-          fi
-
-          exec "$GRADLE_HOME/bin/gradle" "$@"
-          EOF
-
-            chmod +x android/gradlew
-
-          fi
-
-
-          # --------------------------------------------------------
-          # Download Gradle 8.11.1
-          # --------------------------------------------------------
-
-          mkdir -p "$RUNNER_TEMP/gradle-fixed"
-
-          if [ ! -x "$RUNNER_TEMP/gradle-fixed/bin/gradle" ]; then
+            mkdir -p "$RUNNER_TEMP"
 
             curl \
               -fL \
@@ -425,143 +553,104 @@ jobs:
               "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip" \
               -o "$RUNNER_TEMP/gradle.zip"
 
-            rm -rf "$RUNNER_TEMP/gradle-fixed"
-
             unzip -q \
               "$RUNNER_TEMP/gradle.zip" \
               -d "$RUNNER_TEMP"
 
             mv \
               "$RUNNER_TEMP/gradle-8.11.1" \
-              "$RUNNER_TEMP/gradle-fixed"
+              "$GRADLE_DIR"
 
           fi
 
 
-          # --------------------------------------------------------
-          # Verify
-          # --------------------------------------------------------
+          # ======================================================
+          # CREATE GRADLE LAUNCHER
+          # ======================================================
+
+          cat > android/gradlew <<'EOF'
+          #!/bin/sh
+
+          set -e
+
+          GRADLE_DIR="${RUNNER_TEMP}/gradle-fixed"
+
+          if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
+            echo "Gradle 8.11.1 tidak ditemukan."
+            exit 1
+          fi
+
+          exec "$GRADLE_DIR/bin/gradle" "$@"
+          EOF
+
+          chmod +x android/gradlew
+
+
+          # ======================================================
+          # SHOW CONFIG
+          # ======================================================
 
           echo ""
-          echo "========== GRADLE =========="
-
-          "$RUNNER_TEMP/gradle-fixed/bin/gradle" --version
-
-          echo ""
-          echo "========== PROPERTIES =========="
+          echo "=========================================="
+          echo "ANDROID GRADLE PROPERTIES"
+          echo "=========================================="
 
           cat android/gradle.properties
 
           echo ""
-          echo "========== WRAPPER =========="
+          echo "=========================================="
+          echo "AGP REFERENCES"
+          echo "=========================================="
 
-          cat android/gradle/wrapper/gradle-wrapper.properties
+          grep -RInE \
+            'com\.android\.(application|library)|com\.android\.tools\.build|agp[[:space:]]*=|androidGradlePlugin' \
+            android \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            --include='*.toml' \
+            2>/dev/null || true
+
 
           echo ""
-          echo "Gradle preparation OK."
+          echo "=========================================="
+          echo "GRADLE VERSION"
+          echo "=========================================="
+
+          "$GRADLE_DIR/bin/gradle" --version
 
 
-      # ============================================================
-      # ANDROID CONFIG
-      # ============================================================
+          # ======================================================
+          # FINAL AGP 9 CHECK
+          # ======================================================
 
-      - name: Configure Android
-        env:
-          APP_NAME: ${{ steps.payload.outputs.app_name }}
+          if grep -RInE \
+            'com\.android\.(application|library).*9\.[0-9]|com\.android\.tools\.build:gradle:9\.' \
+            android \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            --include='*.toml' \
+            2>/dev/null; then
 
-        shell: bash
-        run: |
-          set -euo pipefail
+            echo ""
+            echo "::error::AGP 9.x masih ditemukan."
 
-          cd "$PROJECT_ROOT"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          import re
-
-          name = os.environ["APP_NAME"]
-
-          name = (
-              name
-              .replace("\\", "\\\\")
-              .replace('"', '\\"')
-          )
-
-          manifest = Path(
-              "android/app/src/main/AndroidManifest.xml"
-          )
-
-          if manifest.exists():
-
-              s = manifest.read_text(
-                  encoding="utf-8",
-                  errors="replace"
-              )
-
-              s = re.sub(
-                  r'android:label="[^"]*"',
-                  f'android:label="{name}"',
-                  s,
-                  count=1
-              )
-
-              manifest.write_text(
-                  s,
-                  encoding="utf-8"
-              )
+            exit 1
+          fi
 
 
-          gradle = Path(
-              "android/app/build.gradle"
-          )
-
-          if gradle.exists():
-
-              s = gradle.read_text(
-                  encoding="utf-8",
-                  errors="replace"
-              )
-
-              s = re.sub(
-                  r'minSdkVersion\s+\d+',
-                  'minSdkVersion 21',
-                  s
-              )
-
-              gradle.write_text(
-                  s,
-                  encoding="utf-8"
-              )
+          echo ""
+          echo "=========================================="
+          echo "ANDROID CONFIGURATION OK"
+          echo "=========================================="
+          echo "AGP      : 8.7.3"
+          echo "Gradle   : 8.11.1"
+          echo "newDsl   : false"
+          echo "=========================================="
 
 
-          gradle_kts = Path(
-              "android/app/build.gradle.kts"
-          )
-
-          if gradle_kts.exists():
-
-              s = gradle_kts.read_text(
-                  encoding="utf-8",
-                  errors="replace"
-              )
-
-              s = re.sub(
-                  r'minSdk\s*=\s*\d+',
-                  'minSdk = 21',
-                  s
-              )
-
-              gradle_kts.write_text(
-                  s,
-                  encoding="utf-8"
-              )
-          PY
-
-
-      # ============================================================
-      # CLEAN
-      # ============================================================
+      # ==========================================================
+      # FLUTTER CLEAN
+      # ==========================================================
 
       - name: Flutter clean
         shell: bash
@@ -572,13 +661,14 @@ jobs:
 
           flutter clean
 
-          rm -rf .dart_tool
-          rm -rf build
+          rm -rf \
+            .dart_tool \
+            build
 
 
-      # ============================================================
+      # ==========================================================
       # PUB GET
-      # ============================================================
+      # ==========================================================
 
       - name: Flutter pub get
         shell: bash
@@ -590,9 +680,9 @@ jobs:
           flutter pub get
 
 
-      # ============================================================
-      # BUILD
-      # ============================================================
+      # ==========================================================
+      # BUILD APK
+      # ==========================================================
 
       - name: Build APK
         env:
@@ -604,9 +694,9 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          echo "======================================"
-          echo "BUILDING APK"
-          echo "======================================"
+          echo "=========================================="
+          echo "BUILD APK"
+          echo "=========================================="
 
           if [ "$BUILD_TYPE" = "debug" ]; then
 
@@ -623,9 +713,9 @@ jobs:
           fi
 
 
-      # ============================================================
-      # COLLECT
-      # ============================================================
+      # ==========================================================
+      # FIND APK
+      # ==========================================================
 
       - name: Collect APK
         shell: bash
@@ -635,7 +725,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/output"
 
           APK="$(
-            find "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
+            find \
+              "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
               -type f \
               -name "*.apk" \
               -print \
@@ -647,36 +738,35 @@ jobs:
             exit 1
           fi
 
-          cp "$APK" \
+          cp \
+            "$APK" \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-          echo \
-            "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
+          echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
             >> "$GITHUB_ENV"
 
+          echo ""
+          echo "APK:"
           ls -lh \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
 
-      # ============================================================
-      # UPLOAD
-      # ============================================================
+      # ==========================================================
+      # UPLOAD ARTIFACT
+      # ==========================================================
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
-
         with:
           name: apk-${{ inputs.jobId }}
-
           path: output/app-${{ inputs.jobId }}.apk
-
           if-no-files-found: error
           retention-days: 3
 
 
-      # ============================================================
+      # ==========================================================
       # SUMMARY
-      # ============================================================
+      # ==========================================================
 
       - name: Build summary
         if: always()
