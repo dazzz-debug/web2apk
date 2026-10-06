@@ -39,17 +39,9 @@ jobs:
 
     steps:
 
-      # ==========================================================
-      # CHECKOUT
-      # ==========================================================
-
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      # ==========================================================
-      # SYSTEM DEPENDENCIES
-      # ==========================================================
 
       - name: Install dependencies
         shell: bash
@@ -67,10 +59,6 @@ jobs:
             file
 
 
-      # ==========================================================
-      # JAVA 17
-      # ==========================================================
-
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
@@ -78,32 +66,19 @@ jobs:
           java-version: "17"
 
 
-      # ==========================================================
-      # FLUTTER
-      # ==========================================================
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+
       - name: Check environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=========================================="
-          echo "FLUTTER"
-          echo "=========================================="
-
           flutter --version
-
-          echo ""
-          echo "=========================================="
-          echo "JAVA"
-          echo "=========================================="
-
           java -version
 
 
@@ -121,14 +96,7 @@ jobs:
           import json
           import os
 
-          raw = os.environ["PAYLOAD"]
-
-          try:
-              data = json.loads(raw)
-          except Exception as e:
-              raise SystemExit(
-                  f"Invalid payload JSON: {e}"
-              )
+          data = json.loads(os.environ["PAYLOAD"])
 
           mode = str(
               data.get("mode", "zip")
@@ -151,23 +119,20 @@ jobs:
                   f"Unsupported mode: {mode}"
               )
 
-          if build_type not in ("release", "debug"):
-              build_type = "release"
-
           if not url:
               raise SystemExit(
                   "payload.url is required"
               )
+
+          if build_type not in ("release", "debug"):
+              build_type = "release"
 
           safe = "".join(
               c if c.isalnum() else "_"
               for c in app_name
           )
 
-          safe = safe.strip("_")
-
-          if not safe:
-              safe = "web2apk"
+          safe = safe.strip("_") or "web2apk"
 
           if safe[0].isdigit():
               safe = "app_" + safe
@@ -179,38 +144,21 @@ jobs:
               "a"
           ) as f:
 
-              f.write(
-                  f"mode={mode}\n"
-              )
-
-              f.write(
-                  f"url={url}\n"
-              )
-
-              f.write(
-                  f"build_type={build_type}\n"
-              )
-
-              f.write(
-                  f"app_name={app_name}\n"
-              )
-
-              f.write(
-                  f"project_name={safe}\n"
-              )
-
-          print("Mode:", mode)
-          print("Build:", build_type)
-          print("App:", app_name)
+              f.write(f"mode={mode}\n")
+              f.write(f"url={url}\n")
+              f.write(f"build_type={build_type}\n")
+              f.write(f"app_name={app_name}\n")
+              f.write(f"project_name={safe}\n")
           PY
 
 
       # ==========================================================
-      # DOWNLOAD ZIP
+      # ZIP MODE
       # ==========================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
+
         env:
           SOURCE_URL: ${{ steps.payload.outputs.url }}
 
@@ -218,10 +166,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/input"
-          mkdir -p "$GITHUB_WORKSPACE/project"
-
-          echo "Downloading source..."
+          mkdir -p \
+            "$GITHUB_WORKSPACE/input" \
+            "$GITHUB_WORKSPACE/project"
 
           curl \
             -fL \
@@ -235,14 +182,9 @@ jobs:
           test -s \
             "$GITHUB_WORKSPACE/input/source.zip"
 
-          echo "Extracting source..."
-
           unzip -q \
             "$GITHUB_WORKSPACE/input/source.zip" \
             -d "$GITHUB_WORKSPACE/project"
-
-          echo ""
-          echo "Searching pubspec.yaml..."
 
           ROOT="$(
             find \
@@ -259,12 +201,11 @@ jobs:
             exit 1
           fi
 
-          echo ""
-          echo "PROJECT ROOT:"
-          echo "$ROOT"
-
           echo "PROJECT_ROOT=$ROOT" \
             >> "$GITHUB_ENV"
+
+          echo "PROJECT ROOT:"
+          echo "$ROOT"
 
 
       # ==========================================================
@@ -371,10 +312,10 @@ jobs:
 
 
       # ==========================================================
-      # ANDROID COMPATIBILITY FIX
+      # FIX ANDROID
       # ==========================================================
 
-      - name: Fix Android AGP compatibility
+      - name: Fix Android Gradle
         shell: bash
         run: |
           set -euo pipefail
@@ -382,19 +323,15 @@ jobs:
           cd "$PROJECT_ROOT"
 
           echo "=========================================="
-          echo "ANDROID COMPATIBILITY FIX"
+          echo "ANDROID GRADLE CONFIG"
           echo "=========================================="
-
-          mkdir -p \
-            android/gradle/wrapper
 
 
           # ------------------------------------------------------
-          # IMPORTANT
+          # KEEP AGP 8.9.1
           #
-          # Flutter sedang mendeteksi AGP 9.
-          # Kita downgrade AGP ke 8.7.3.
-          # Gradle 8.11.1 dipakai supaya kompatibel.
+          # IMPORTANT:
+          # Do NOT downgrade 8.9.1.
           # ------------------------------------------------------
 
           python3 - <<'PY'
@@ -405,11 +342,11 @@ jobs:
 
           files = []
 
-          for pattern in [
+          for pattern in (
               "*.gradle",
               "*.gradle.kts",
-              "*.toml",
-          ]:
+              "*.toml"
+          ):
               files.extend(
                   root.rglob(pattern)
               )
@@ -426,68 +363,44 @@ jobs:
 
               original = text
 
-
-              # ------------------------------------------------
-              # plugins DSL
-              # ------------------------------------------------
+              # Only convert REAL AGP 9.x.
+              # 8.9.1 MUST remain 8.9.1.
 
               text = re.sub(
-                  r'(\bid\s*\(\s*["\']com\.android\.application["\']\s*\)\s*version\s*["\'])9\.[^"\']+(["\'])',
-                  r'\g<1>8.7.3\g<2>',
+                  r'(com\.android\.application["\']?\s*\)?\s*version\s*["\'])9\.[0-9.]+(["\'])',
+                  r'\g<1>8.9.1\g<2>',
                   text
               )
 
               text = re.sub(
-                  r'(\bid\s*\(\s*["\']com\.android\.library["\']\s*\)\s*version\s*["\'])9\.[^"\']+(["\'])',
-                  r'\g<1>8.7.3\g<2>',
-                  text
-              )
-
-
-              # ------------------------------------------------
-              # old plugins syntax
-              # ------------------------------------------------
-
-              text = re.sub(
-                  r'(\bid\s+["\']com\.android\.application["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
-                  r'\g<1>8.7.3\g<2>',
+                  r'(com\.android\.library["\']?\s*\)?\s*version\s*["\'])9\.[0-9.]+(["\'])',
+                  r'\g<1>8.9.1\g<2>',
                   text
               )
 
               text = re.sub(
-                  r'(\bid\s+["\']com\.android\.library["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
-                  r'\g<1>8.7.3\g<2>',
+                  r'(id\s+["\']com\.android\.application["\']\s+version\s+["\'])9\.[0-9.]+(["\'])',
+                  r'\g<1>8.9.1\g<2>',
                   text
               )
 
-
-              # ------------------------------------------------
-              # buildscript dependency
-              # ------------------------------------------------
+              text = re.sub(
+                  r'(id\s+["\']com\.android\.library["\']\s+version\s+["\'])9\.[0-9.]+(["\'])',
+                  r'\g<1>8.9.1\g<2>',
+                  text
+              )
 
               text = re.sub(
                   r'(com\.android\.tools\.build:gradle:)\s*9\.[0-9.]+',
-                  r'\g<1>8.7.3',
-                  text
-              )
-
-
-              # ------------------------------------------------
-              # version catalog
-              # ------------------------------------------------
-
-              text = re.sub(
-                  r'(\bagp\s*=\s*["\'])9\.[^"\']+(["\'])',
-                  r'\g<1>8.7.3\g<2>',
+                  r'\g<1>8.9.1',
                   text
               )
 
               text = re.sub(
-                  r'(\bandroidGradlePlugin\s*=\s*["\'])9\.[^"\']+(["\'])',
-                  r'\g<1>8.7.3\g<2>',
+                  r'(\bagp\s*=\s*["\'])9\.[0-9.]+(["\'])',
+                  r'\g<1>8.9.1\g<2>',
                   text
               )
-
 
               if text != original:
 
@@ -497,31 +410,80 @@ jobs:
                   )
 
                   print(
-                      "FIXED AGP:",
+                      "Fixed real AGP 9 reference:",
                       p
                   )
-
           PY
 
 
-          # ======================================================
+          # ------------------------------------------------------
           # GRADLE PROPERTIES
-          # ======================================================
+          # ------------------------------------------------------
 
-          cat > android/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx4G -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          android.enableJetifier=true
-          android.newDsl=false
-          android.builtInKotlin=false
-          EOF
+          touch android/gradle.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("android/gradle.properties")
+
+          text = p.read_text(
+              encoding="utf-8",
+              errors="replace"
+          )
+
+          text = text.replace(
+              "\r\n",
+              "\n"
+          )
+
+          text = text.replace(
+              "\r",
+              "\n"
+          )
+
+          lines = []
+
+          for line in text.splitlines():
+
+              stripped = line.strip()
+
+              if stripped.startswith(
+                  "android.newDsl="
+              ):
+                  continue
+
+              if stripped.startswith(
+                  "android.builtInKotlin="
+              ):
+                  continue
+
+              lines.append(line)
+
+          lines.append(
+              "android.newDsl=false"
+          )
+
+          lines.append(
+              "android.builtInKotlin=false"
+          )
+
+          p.write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8"
+          )
+          PY
 
 
-          # ======================================================
+          # ------------------------------------------------------
           # GRADLE WRAPPER
-          # ======================================================
+          # ------------------------------------------------------
 
-          cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          mkdir -p \
+            android/gradle/wrapper
+
+          cat > \
+            android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
           distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip
@@ -532,17 +494,15 @@ jobs:
           EOF
 
 
-          # ======================================================
-          # DOWNLOAD GRADLE
-          # ======================================================
+          # ------------------------------------------------------
+          # GRADLE 8.11.1
+          # ------------------------------------------------------
 
           GRADLE_DIR="$RUNNER_TEMP/gradle-fixed"
 
           if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
 
             rm -rf "$GRADLE_DIR"
-
-            mkdir -p "$RUNNER_TEMP"
 
             curl \
               -fL \
@@ -564,23 +524,18 @@ jobs:
           fi
 
 
-          # ======================================================
-          # CREATE GRADLE LAUNCHER
-          # ======================================================
+          # ------------------------------------------------------
+          # GRADLEW
+          # ------------------------------------------------------
 
           cat > android/gradlew <<'EOF'
           #!/bin/sh
 
           set -e
 
-          GRADLE_DIR="${RUNNER_TEMP}/gradle-fixed"
-
-          if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
-            echo "Gradle 8.11.1 tidak ditemukan."
-            exit 1
-          fi
-
-          exec "$GRADLE_DIR/bin/gradle" "$@"
+          exec \
+            "${RUNNER_TEMP}/gradle-fixed/bin/gradle" \
+            "$@"
           EOF
 
           chmod +x android/gradlew
@@ -592,18 +547,11 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "ANDROID GRADLE PROPERTIES"
-          echo "=========================================="
-
-          cat android/gradle.properties
-
-          echo ""
-          echo "=========================================="
-          echo "AGP REFERENCES"
+          echo "AGP CONFIGURATION"
           echo "=========================================="
 
           grep -RInE \
-            'com\.android\.(application|library)|com\.android\.tools\.build|agp[[:space:]]*=|androidGradlePlugin' \
+            'com\.android\.(application|library)|com\.android\.tools\.build|agp[[:space:]]*=' \
             android \
             --include='*.gradle' \
             --include='*.gradle.kts' \
@@ -620,31 +568,100 @@ jobs:
 
 
           # ======================================================
-          # FINAL AGP 9 CHECK
+          # PRECISE AGP 9 CHECK
+          #
+          # IMPORTANT:
+          # This extracts actual plugin versions.
+          # Therefore 8.9.1 will NOT be mistaken for 9.x.
           # ======================================================
 
-          if grep -RInE \
-            'com\.android\.(application|library).*9\.[0-9]|com\.android\.tools\.build:gradle:9\.' \
-            android \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            --include='*.toml' \
-            2>/dev/null; then
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
 
-            echo ""
-            echo "::error::AGP 9.x masih ditemukan."
+          root = Path("android")
 
-            exit 1
-          fi
+          bad = []
+
+          patterns = [
+              re.compile(
+                  r'com\.android\.application.*?version\s*["\'](\d+)\.(\d+)\.(\d+)'
+              ),
+              re.compile(
+                  r'com\.android\.library.*?version\s*["\'](\d+)\.(\d+)\.(\d+)'
+              ),
+          ]
+
+          for p in root.rglob("*"):
+
+              if p.suffix not in (
+                  ".gradle",
+                  ".kts",
+                  ".toml"
+              ):
+                  continue
+
+              try:
+                  text = p.read_text(
+                      encoding="utf-8",
+                      errors="replace"
+                  )
+              except Exception:
+                  continue
+
+              for pattern in patterns:
+
+                  for match in pattern.finditer(text):
+
+                      major = int(
+                          match.group(1)
+                      )
+
+                      version = (
+                          f"{match.group(1)}."
+                          f"{match.group(2)}."
+                          f"{match.group(3)}"
+                      )
+
+                      print(
+                          f"Detected AGP {version} "
+                          f"in {p}"
+                      )
+
+                      if major >= 9:
+
+                          bad.append(
+                              f"{p}: AGP {version}"
+                          )
+
+          if bad:
+
+              print("")
+              print(
+                  "::error::Actual AGP 9.x detected:"
+              )
+
+              for item in bad:
+                  print(item)
+
+              sys.exit(1)
+
+          print("")
+          print(
+              "No AGP 9.x detected."
+          )
+
+          PY
 
 
           echo ""
           echo "=========================================="
           echo "ANDROID CONFIGURATION OK"
           echo "=========================================="
-          echo "AGP      : 8.7.3"
-          echo "Gradle   : 8.11.1"
-          echo "newDsl   : false"
+          echo "AGP    : 8.9.1"
+          echo "Gradle : 8.11.1"
+          echo "newDsl : false"
           echo "=========================================="
 
 
@@ -681,7 +698,7 @@ jobs:
 
 
       # ==========================================================
-      # BUILD APK
+      # BUILD
       # ==========================================================
 
       - name: Build APK
@@ -695,7 +712,7 @@ jobs:
           cd "$PROJECT_ROOT"
 
           echo "=========================================="
-          echo "BUILD APK"
+          echo "BUILDING APK"
           echo "=========================================="
 
           if [ "$BUILD_TYPE" = "debug" ]; then
@@ -714,7 +731,7 @@ jobs:
 
 
       # ==========================================================
-      # FIND APK
+      # COLLECT APK
       # ==========================================================
 
       - name: Collect APK
@@ -722,7 +739,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/output"
 
           APK="$(
             find \
@@ -742,7 +760,8 @@ jobs:
             "$APK" \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-          echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
+          echo \
+            "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
             >> "$GITHUB_ENV"
 
           echo ""
@@ -752,7 +771,7 @@ jobs:
 
 
       # ==========================================================
-      # UPLOAD ARTIFACT
+      # UPLOAD
       # ==========================================================
 
       - name: Upload APK
