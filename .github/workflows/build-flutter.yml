@@ -7,11 +7,13 @@ on:
         description: "Unique build/job ID"
         required: true
         type: string
+
       userId:
         description: "Telegram user ID"
         required: false
         default: "0"
         type: string
+
       payload:
         description: "JSON build payload"
         required: true
@@ -22,7 +24,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: scbuild-${{ github.workflow }}-${{ inputs.jobId }}
+  group: scbuild-${{ inputs.jobId }}
   cancel-in-progress: false
 
 jobs:
@@ -36,8 +38,17 @@ jobs:
       PAYLOAD: ${{ inputs.payload }}
 
     steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ==========================================================
+      # PARSE PAYLOAD
+      # ==========================================================
 
       - name: Parse payload
         id: payload
@@ -52,50 +63,113 @@ jobs:
           data = json.loads(os.environ["PAYLOAD"])
 
           mode = str(data.get("mode", "zip")).lower()
-          build_type = str(data.get("buildType", "release")).lower()
-          url = str(data.get("url", "")).strip()
-          app_name = str(data.get("appName", "Web2APK")).strip()
-          icon_url = str(data.get("iconUrl", "")).strip()
+          build_type = str(
+              data.get("buildType", "release")
+          ).lower()
+
+          url = str(
+              data.get("url", "")
+          ).strip()
+
+          app_name = str(
+              data.get("appName", "Web2APK")
+          ).strip()
+
+          icon_url = str(
+              data.get("iconUrl", "")
+          ).strip()
 
           if mode not in ("zip", "url"):
-              raise SystemExit(f"Unsupported mode: {mode}")
+              raise SystemExit(
+                  f"Unsupported mode: {mode}"
+              )
 
           if build_type not in ("release", "debug"):
               build_type = "release"
 
           if not url:
-              raise SystemExit("payload.url is required")
+              raise SystemExit(
+                  "payload.url is required"
+              )
 
           safe = "".join(
               c if c.isalnum() else "_"
               for c in app_name
-          ).strip("_") or "web2apk"
+          )
+
+          safe = safe.strip("_") or "web2apk"
 
           if safe[0].isdigit():
               safe = "app_" + safe
 
           safe = safe[:40].lower()
 
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"mode={mode}\n")
-              f.write(f"build_type={build_type}\n")
-              f.write(f"url={url}\n")
-              f.write(f"app_name={app_name}\n")
-              f.write(f"icon_url={icon_url}\n")
-              f.write(f"project_name={safe}\n")
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a"
+          ) as f:
+
+              f.write(
+                  f"mode={mode}\n"
+              )
+
+              f.write(
+                  f"build_type={build_type}\n"
+              )
+
+              f.write(
+                  f"url={url}\n"
+              )
+
+              f.write(
+                  f"app_name={app_name}\n"
+              )
+
+              f.write(
+                  f"icon_url={icon_url}\n"
+              )
+
+              f.write(
+                  f"project_name={safe}\n"
+              )
           PY
 
-      - name: Install dependencies
+      # ==========================================================
+      # TOOLS
+      # ==========================================================
+
+      - name: Install system packages
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt-get update
-          sudo apt-get install -y unzip wget curl jq python3 imagemagick
+
+          sudo apt-get install -y \
+            unzip \
+            wget \
+            curl \
+            jq \
+            python3 \
+            imagemagick
+
+      # ==========================================================
+      # JAVA
+      #
+      # IMPORTANT:
+      # No Gradle cache here because the Flutter project has not
+      # been downloaded yet.
+      # ==========================================================
 
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
+
+      # ==========================================================
+      # FLUTTER
+      # ==========================================================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -103,42 +177,51 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Check versions
+      - name: Check environment
+        shell: bash
         run: |
           flutter --version
           dart --version
           java -version
 
-      # ============================================================
+      # ==========================================================
       # ZIP MODE
-      # ============================================================
+      # ==========================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
         env:
           SOURCE_URL: ${{ steps.payload.outputs.url }}
+        shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
+          echo "Downloading source..."
+
           curl -fL \
-            --retry 4 \
-            --retry-delay 2 \
+            --retry 5 \
+            --retry-delay 3 \
             --connect-timeout 30 \
-            --max-time 600 \
+            --max-time 900 \
             "$SOURCE_URL" \
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
           test -s "$GITHUB_WORKSPACE/input/source.zip"
 
+          echo "Extracting source..."
+
           unzip -q \
             "$GITHUB_WORKSPACE/input/source.zip" \
             -d "$GITHUB_WORKSPACE/project"
 
+          echo "Searching Flutter project..."
+
           ROOT="$(
-            find "$GITHUB_WORKSPACE/project" \
+            find \
+              "$GITHUB_WORKSPACE/project" \
               -name pubspec.yaml \
               -type f \
               -print -quit |
@@ -146,18 +229,29 @@ jobs:
           )"
 
           if [ -z "${ROOT:-}" ]; then
-            echo "::error::pubspec.yaml tidak ditemukan."
+            echo "::error::pubspec.yaml tidak ditemukan di source ZIP."
+
+            echo "ZIP CONTENT:"
+            find \
+              "$GITHUB_WORKSPACE/project" \
+              -maxdepth 4 \
+              -type f |
+            head -200
+
             exit 1
           fi
 
-          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
-
+          echo "================================"
           echo "Flutter project:"
           echo "$ROOT"
+          echo "================================"
 
-      # ============================================================
-      # URL / WEB2APK MODE
-      # ============================================================
+          echo "PROJECT_ROOT=$ROOT" \
+            >> "$GITHUB_ENV"
+
+      # ==========================================================
+      # URL MODE
+      # ==========================================================
 
       - name: Create Web2APK project
         if: steps.payload.outputs.mode == 'url'
@@ -165,6 +259,7 @@ jobs:
           PROJECT_NAME: ${{ steps.payload.outputs.project_name }}
           APP_NAME: ${{ steps.payload.outputs.app_name }}
           TARGET_URL: ${{ steps.payload.outputs.url }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -174,7 +269,8 @@ jobs:
             --platforms=android \
             "$PROJECT_NAME"
 
-          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/$PROJECT_NAME" \
+            >> "$GITHUB_ENV"
 
           cd "$GITHUB_WORKSPACE/$PROJECT_NAME"
 
@@ -187,8 +283,17 @@ jobs:
           url = os.environ["TARGET_URL"]
           app = os.environ["APP_NAME"]
 
-          url = url.replace("\\", "\\\\").replace("'", "\\'")
-          app = app.replace("\\", "\\\\").replace("'", "\\'")
+          url = (
+              url
+              .replace("\\", "\\\\")
+              .replace("'", "\\'")
+          )
+
+          app = (
+              app
+              .replace("\\", "\\\\")
+              .replace("'", "\\'")
+          )
 
           code = f"""
           import 'package:flutter/material.dart';
@@ -220,12 +325,14 @@ jobs:
                 ..setNavigationDelegate(
                   NavigationDelegate(
                     onWebResourceError: (error) {{
-                      debugPrint(error.description);
+                      debugPrint(
+                        error.description
+                      );
                     }},
                   ),
                 )
                 ..loadRequest(
-                  Uri.parse('{url}'),
+                  Uri.parse('{url}')
                 );
             }}
 
@@ -246,19 +353,37 @@ jobs:
           }}
           """
 
-          Path("lib/main.dart").write_text(
-            code,
-            encoding="utf-8"
+          Path(
+              "lib/main.dart"
+          ).write_text(
+              code,
+              encoding="utf-8"
           )
           PY
 
-      # ============================================================
+      # ==========================================================
+      # NOW PROJECT EXISTS
+      # ENABLE GRADLE CACHE MANUALLY
+      # ==========================================================
+
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ==========================================================
       # ANDROID CONFIG
-      # ============================================================
+      # ==========================================================
 
       - name: Configure Android
         env:
           APP_NAME: ${{ steps.payload.outputs.app_name }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -270,15 +395,22 @@ jobs:
           import re
 
           name = os.environ["APP_NAME"]
-          name = name.replace("\\", "\\\\")
-          name = name.replace('"', '\\"')
+
+          name = (
+              name
+              .replace("\\", "\\\\")
+              .replace('"', '\\"')
+          )
 
           manifest = Path(
               "android/app/src/main/AndroidManifest.xml"
           )
 
           if manifest.exists():
-              s = manifest.read_text()
+
+              s = manifest.read_text(
+                  encoding="utf-8"
+              )
 
               s = re.sub(
                   r'android:label="[^"]*"',
@@ -287,12 +419,20 @@ jobs:
                   count=1
               )
 
-              manifest.write_text(s)
+              manifest.write_text(
+                  s,
+                  encoding="utf-8"
+              )
 
-          gradle = Path("android/app/build.gradle")
+          gradle = Path(
+              "android/app/build.gradle"
+          )
 
           if gradle.exists():
-              s = gradle.read_text()
+
+              s = gradle.read_text(
+                  encoding="utf-8"
+              )
 
               s = re.sub(
                   r'minSdkVersion\s+\d+',
@@ -300,14 +440,20 @@ jobs:
                   s
               )
 
-              gradle.write_text(s)
+              gradle.write_text(
+                  s,
+                  encoding="utf-8"
+              )
 
           gradle_kts = Path(
               "android/app/build.gradle.kts"
           )
 
           if gradle_kts.exists():
-              s = gradle_kts.read_text()
+
+              s = gradle_kts.read_text(
+                  encoding="utf-8"
+              )
 
               s = re.sub(
                   r'minSdk\s*=\s*\d+',
@@ -315,41 +461,18 @@ jobs:
                   s
               )
 
-              gradle_kts.write_text(s)
+              gradle_kts.write_text(
+                  s,
+                  encoding="utf-8"
+              )
           PY
 
-      # ============================================================
-      # ICON
-      # ============================================================
-
-      - name: Download icon
-        if: steps.payload.outputs.mode == 'url' && steps.payload.outputs.icon_url != ''
-        env:
-          ICON_URL: ${{ steps.payload.outputs.icon_url }}
-        run: |
-          set -euo pipefail
-
-          mkdir -p /tmp/scbuild_icon
-
-          curl -fL \
-            --retry 3 \
-            --connect-timeout 20 \
-            --max-time 180 \
-            "$ICON_URL" \
-            -o /tmp/scbuild_icon/icon.png || true
-
-          if [ -s /tmp/scbuild_icon/icon.png ]; then
-            mkdir -p "$PROJECT_ROOT/android/app/src/main/res/drawable"
-            cp \
-              /tmp/scbuild_icon/icon.png \
-              "$PROJECT_ROOT/android/app/src/main/res/drawable/scbuild_icon.png"
-          fi
-
-      # ============================================================
-      # FLUTTER DEPENDENCIES
-      # ============================================================
+      # ==========================================================
+      # DEPENDENCIES
+      # ==========================================================
 
       - name: Flutter dependencies
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -362,11 +485,12 @@ jobs:
 
           flutter pub get
 
-      # ============================================================
+      # ==========================================================
       # VALIDATE
-      # ============================================================
+      # ==========================================================
 
-      - name: Validate project
+      - name: Validate Flutter project
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -378,33 +502,39 @@ jobs:
             --no-fatal-infos \
             --no-fatal-warnings || true
 
-      # ============================================================
-      # BUILD
-      # ============================================================
+      # ==========================================================
+      # BUILD APK
+      # ==========================================================
 
       - name: Build APK
         env:
           BUILD_TYPE: ${{ steps.payload.outputs.build_type }}
+        shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
 
           if [ "$BUILD_TYPE" = "debug" ]; then
+
             flutter build apk \
               --debug \
               --no-tree-shake-icons
+
           else
+
             flutter build apk \
               --release \
               --no-tree-shake-icons
+
           fi
 
-      # ============================================================
+      # ==========================================================
       # COLLECT APK
-      # ============================================================
+      # ==========================================================
 
       - name: Collect APK
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -414,18 +544,27 @@ jobs:
             find \
               "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
               -type f \
-              -name '*.apk' |
+              -name "*.apk" |
             head -n 1
           )"
 
           if [ -z "${APK:-}" ]; then
-            echo "::error::APK tidak ditemukan."
-            find "$PROJECT_ROOT/build" \
-              -type f 2>/dev/null | head -200
+
+            echo "::error::APK hasil build tidak ditemukan."
+
+            find \
+              "$PROJECT_ROOT/build" \
+              -type f 2>/dev/null |
+            head -300
+
             exit 1
           fi
 
-          cp "$APK" \
+          echo "APK ditemukan:"
+          echo "$APK"
+
+          cp \
+            "$APK" \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
           echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
@@ -434,11 +573,11 @@ jobs:
           ls -lh \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-      # ============================================================
-      # ARTIFACT
-      # ============================================================
+      # ==========================================================
+      # UPLOAD ARTIFACT
+      # ==========================================================
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.jobId }}
@@ -446,12 +585,13 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      # ============================================================
+      # ==========================================================
       # SUMMARY
-      # ============================================================
+      # ==========================================================
 
       - name: Build summary
         if: always()
+        shell: bash
         run: |
           {
             echo "## SCBUILD DAZZ"
