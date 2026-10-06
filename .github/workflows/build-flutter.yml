@@ -99,10 +99,10 @@ jobs:
 
 
       # ============================================================
-      # SYSTEM
+      # SYSTEM PACKAGES
       # ============================================================
 
-      - name: Install dependencies
+      - name: Install system packages
         shell: bash
         run: |
           set -euo pipefail
@@ -111,16 +111,15 @@ jobs:
 
           sudo apt-get install -y \
             unzip \
-            wget \
             curl \
+            wget \
             jq \
             python3 \
-            file \
-            sed
+            file
 
 
       # ============================================================
-      # JAVA 17
+      # JAVA
       # ============================================================
 
       - name: Setup Java 17
@@ -141,20 +140,28 @@ jobs:
           cache: true
 
 
-      - name: Check environment
+      - name: Environment
         shell: bash
         run: |
+          set -euo pipefail
+
+          echo "========== FLUTTER =========="
           flutter --version
+
+          echo "========== DART =========="
           dart --version
+
+          echo "========== JAVA =========="
           java -version
 
 
       # ============================================================
-      # DOWNLOAD SOURCE
+      # DOWNLOAD ZIP
       # ============================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
+
         env:
           SOURCE_URL: ${{ steps.payload.outputs.url }}
 
@@ -165,8 +172,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
-          echo "Downloading:"
-          echo "$SOURCE_URL"
+          echo "Downloading source..."
 
           curl \
             -fL \
@@ -178,6 +184,8 @@ jobs:
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
           test -s "$GITHUB_WORKSPACE/input/source.zip"
+
+          echo "Extracting source..."
 
           unzip -q \
             "$GITHUB_WORKSPACE/input/source.zip" \
@@ -196,7 +204,7 @@ jobs:
             echo "::error::pubspec.yaml tidak ditemukan."
 
             find "$GITHUB_WORKSPACE/project" \
-              -maxdepth 6 \
+              -maxdepth 7 \
               -type f |
               head -300
 
@@ -205,10 +213,9 @@ jobs:
 
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
 
-          echo "================================"
+          echo ""
           echo "PROJECT ROOT:"
           echo "$ROOT"
-          echo "================================"
 
 
       # ============================================================
@@ -273,7 +280,9 @@ jobs:
               super.initState();
 
               controller = WebViewController()
-                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setJavaScriptMode(
+                  JavaScriptMode.unrestricted
+                )
                 ..loadRequest(
                   Uri.parse('{url}')
                 );
@@ -304,30 +313,17 @@ jobs:
 
 
       # ============================================================
-      # FIX ANDROID GRADLE
+      # NORMALIZE ANDROID GRADLE
       # ============================================================
 
-      - name: Fix Android Gradle configuration
+      - name: Normalize Android Gradle
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
 
-          echo "======================================"
-          echo "ANDROID PROJECT"
-          echo "======================================"
-
-          find android -maxdepth 3 -type f \
-            \( -name "*.gradle" -o -name "*.gradle.kts" -o -name "gradle.properties" \) \
-            -print
-
-
-          # --------------------------------------------------------
-          # gradle.properties
-          # --------------------------------------------------------
-
-          mkdir -p android
+          mkdir -p android/gradle/wrapper
 
           touch android/gradle.properties
 
@@ -344,7 +340,7 @@ jobs:
           text = text.replace("\r\n", "\n")
           text = text.replace("\r", "\n")
 
-          # Fix corruption from previous workflow
+          # Repair corruption from previous attempts.
           text = text.replace(
               "falseandroid.newDsl=false",
               "false\nandroid.newDsl=false"
@@ -358,13 +354,16 @@ jobs:
           lines = []
 
           for line in text.split("\n"):
-
               stripped = line.strip()
 
-              if stripped.startswith("android.newDsl="):
+              if stripped.startswith(
+                  "android.newDsl="
+              ):
                   continue
 
-              if stripped.startswith("android.builtInKotlin="):
+              if stripped.startswith(
+                  "android.builtInKotlin="
+              ):
                   continue
 
               lines.append(line)
@@ -372,8 +371,13 @@ jobs:
           while lines and not lines[-1].strip():
               lines.pop()
 
-          lines.append("android.newDsl=false")
-          lines.append("android.builtInKotlin=false")
+          lines.append(
+              "android.newDsl=false"
+          )
+
+          lines.append(
+              "android.builtInKotlin=false"
+          )
 
           p.write_text(
               "\n".join(lines) + "\n",
@@ -382,9 +386,64 @@ jobs:
           PY
 
 
-          # --------------------------------------------------------
-          # settings.gradle / settings.gradle.kts
-          # --------------------------------------------------------
+          # ========================================================
+          # FORCE GRADLE 8.11.1
+          # ========================================================
+
+          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
+
+          if [ ! -f "$WRAPPER" ]; then
+            cat > "$WRAPPER" <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+          else
+
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path(
+              "android/gradle/wrapper/gradle-wrapper.properties"
+          )
+
+          s = p.read_text(
+              encoding="utf-8",
+              errors="replace"
+          )
+
+          s = re.sub(
+              r'^distributionUrl=.*$',
+              r'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11.1-all.zip',
+              s,
+              flags=re.MULTILINE
+          )
+
+          if "distributionUrl=" not in s:
+              s += (
+                  "\n"
+                  "distributionUrl="
+                  "https\\://services.gradle.org/"
+                  "distributions/gradle-8.11.1-all.zip\n"
+              )
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
+          PY
+
+          fi
+
+
+          # ========================================================
+          # FIX AGP ONLY IF IT IS 9.x
+          # ========================================================
 
           if [ -f android/settings.gradle.kts ]; then
 
@@ -393,22 +452,32 @@ jobs:
           import re
 
           p = Path("android/settings.gradle.kts")
-          s = p.read_text(encoding="utf-8")
 
-          # AGP 9.x -> AGP 8.7.3
+          s = p.read_text(
+              encoding="utf-8",
+              errors="replace"
+          )
+
+          # AGP 9.x requires new DSL.
+          # We keep AGP 8.x because Flutter projects
+          # using the legacy plugin path need newDsl=false.
+
           s = re.sub(
-              r'id\(["\']com\.android\.application["\']\)\s+version\s+["\']9\.[^"\']+["\']',
-              'id("com.android.application") version "8.7.3"',
+              r'(id\(["\']com\.android\.application["\']\)\s+version\s+["\'])9\.[^"\']+(["\'])',
+              r'\g<1>8.7.3\g<2>',
               s
           )
 
           s = re.sub(
-              r'id\(["\']com\.android\.library["\']\)\s+version\s+["\']9\.[^"\']+["\']',
-              'id("com.android.library") version "8.7.3"',
+              r'(id\(["\']com\.android\.library["\']\)\s+version\s+["\'])9\.[^"\']+(["\'])',
+              r'\g<1>8.7.3\g<2>',
               s
           )
 
-          p.write_text(s, encoding="utf-8")
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
           PY
 
           fi
@@ -421,63 +490,52 @@ jobs:
           import re
 
           p = Path("android/settings.gradle")
-          s = p.read_text(encoding="utf-8")
+
+          s = p.read_text(
+              encoding="utf-8",
+              errors="replace"
+          )
 
           s = re.sub(
-              r'id\s+["\']com\.android\.application["\']\s+version\s+["\']9\.[^"\']+["\']',
-              'id "com.android.application" version "8.7.3"',
+              r'(id\s+["\']com\.android\.application["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
+              r'\g<1>8.7.3\g<2>',
               s
           )
 
           s = re.sub(
-              r'id\s+["\']com\.android\.library["\']\s+version\s+["\']9\.[^"\']+["\']',
-              'id "com.android.library" version "8.7.3"',
+              r'(id\s+["\']com\.android\.library["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
+              r'\g<1>8.7.3\g<2>',
               s
           )
 
-          p.write_text(s, encoding="utf-8")
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
           PY
 
           fi
 
 
-          # --------------------------------------------------------
-          # gradle-wrapper.properties
-          # --------------------------------------------------------
-
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-
-            sed -i \
-              -E 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-all.zip#' \
-              android/gradle/wrapper/gradle-wrapper.properties
-
-          fi
-
-
-          # --------------------------------------------------------
-          # Verify
-          # --------------------------------------------------------
+          # ========================================================
+          # PRINT FINAL CONFIG
+          # ========================================================
 
           echo ""
-          echo "======================================"
-          echo "gradle.properties"
-          echo "======================================"
-
-          cat -n android/gradle.properties
+          echo "=========================================="
+          echo "FINAL GRADLE CONFIG"
+          echo "=========================================="
 
           echo ""
-          echo "======================================"
-          echo "gradle-wrapper.properties"
-          echo "======================================"
-
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-            cat android/gradle/wrapper/gradle-wrapper.properties
-          fi
+          echo "--- gradle.properties ---"
+          cat android/gradle.properties
 
           echo ""
-          echo "======================================"
-          echo "settings.gradle"
-          echo "======================================"
+          echo "--- gradle-wrapper.properties ---"
+          cat android/gradle/wrapper/gradle-wrapper.properties
+
+          echo ""
+          echo "--- settings.gradle* ---"
 
           if [ -f android/settings.gradle ]; then
             cat android/settings.gradle
@@ -487,13 +545,19 @@ jobs:
             cat android/settings.gradle.kts
           fi
 
+          echo ""
+          echo "=========================================="
 
-          # HARD CHECK
+
+          # ========================================================
+          # HARD VALIDATION
+          # ========================================================
+
           if grep -Rqs \
             "android.enableJetifier=falseandroid" \
             android; then
 
-            echo "::error::gradle.properties corrupt."
+            echo "::error::Corrupted gradle.properties detected."
             exit 1
           fi
 
@@ -502,6 +566,14 @@ jobs:
             android/gradle.properties; then
 
             echo "::error::android.newDsl=false missing."
+            exit 1
+          fi
+
+          if ! grep -q \
+            'gradle-8.11.1-all.zip' \
+            android/gradle/wrapper/gradle-wrapper.properties; then
+
+            echo "::error::Gradle 8.11.1 wrapper not configured."
             exit 1
           fi
 
@@ -533,11 +605,6 @@ jobs:
               .replace('"', '\\"')
           )
 
-
-          # --------------------------------------------------------
-          # Manifest
-          # --------------------------------------------------------
-
           manifest = Path(
               "android/app/src/main/AndroidManifest.xml"
           )
@@ -545,7 +612,8 @@ jobs:
           if manifest.exists():
 
               s = manifest.read_text(
-                  encoding="utf-8"
+                  encoding="utf-8",
+                  errors="replace"
               )
 
               s = re.sub(
@@ -561,10 +629,6 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # build.gradle
-          # --------------------------------------------------------
-
           gradle = Path(
               "android/app/build.gradle"
           )
@@ -572,7 +636,8 @@ jobs:
           if gradle.exists():
 
               s = gradle.read_text(
-                  encoding="utf-8"
+                  encoding="utf-8",
+                  errors="replace"
               )
 
               s = re.sub(
@@ -587,10 +652,6 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # build.gradle.kts
-          # --------------------------------------------------------
-
           gradle_kts = Path(
               "android/app/build.gradle.kts"
           )
@@ -598,7 +659,8 @@ jobs:
           if gradle_kts.exists():
 
               s = gradle_kts.read_text(
-                  encoding="utf-8"
+                  encoding="utf-8",
+                  errors="replace"
               )
 
               s = re.sub(
@@ -663,7 +725,36 @@ jobs:
 
 
       # ============================================================
-      # BUILD
+      # VERIFY GRADLE VERSION BEFORE BUILD
+      # ============================================================
+
+      - name: Verify Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          echo "======================================"
+          echo "GRADLE VERSION"
+          echo "======================================"
+
+          ./gradlew --version
+
+          echo ""
+          echo "Expected:"
+          echo "Gradle 8.11.1"
+
+
+          ./gradlew --version |
+            grep -q "Gradle 8.11.1" || {
+              echo "::error::Wrong Gradle version."
+              exit 1
+            }
+
+
+      # ============================================================
+      # BUILD APK
       # ============================================================
 
       - name: Build APK
@@ -677,7 +768,7 @@ jobs:
           cd "$PROJECT_ROOT"
 
           echo "======================================"
-          echo "BUILDING APK"
+          echo "BUILD APK"
           echo "======================================"
 
           if [ "$BUILD_TYPE" = "debug" ]; then
@@ -737,7 +828,7 @@ jobs:
 
 
       # ============================================================
-      # UPLOAD APK
+      # UPLOAD
       # ============================================================
 
       - name: Upload APK artifact
