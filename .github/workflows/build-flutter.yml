@@ -99,7 +99,7 @@ jobs:
 
 
       # ============================================================
-      # SYSTEM PACKAGES
+      # SYSTEM
       # ============================================================
 
       - name: Install system packages
@@ -140,18 +140,13 @@ jobs:
           cache: true
 
 
-      - name: Environment
+      - name: Check environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "========== FLUTTER =========="
           flutter --version
-
-          echo "========== DART =========="
           dart --version
-
-          echo "========== JAVA =========="
           java -version
 
 
@@ -172,8 +167,6 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
-          echo "Downloading source..."
-
           curl \
             -fL \
             --retry 5 \
@@ -184,8 +177,6 @@ jobs:
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
           test -s "$GITHUB_WORKSPACE/input/source.zip"
-
-          echo "Extracting source..."
 
           unzip -q \
             "$GITHUB_WORKSPACE/input/source.zip" \
@@ -202,12 +193,6 @@ jobs:
 
           if [ -z "${ROOT:-}" ]; then
             echo "::error::pubspec.yaml tidak ditemukan."
-
-            find "$GITHUB_WORKSPACE/project" \
-              -maxdepth 7 \
-              -type f |
-              head -300
-
             exit 1
           fi
 
@@ -313,10 +298,10 @@ jobs:
 
 
       # ============================================================
-      # NORMALIZE ANDROID GRADLE
+      # FIX ANDROID GRADLE
       # ============================================================
 
-      - name: Normalize Android Gradle
+      - name: Fix Android Gradle
         shell: bash
         run: |
           set -euo pipefail
@@ -324,6 +309,10 @@ jobs:
           cd "$PROJECT_ROOT"
 
           mkdir -p android/gradle/wrapper
+
+          # --------------------------------------------------------
+          # gradle.properties
+          # --------------------------------------------------------
 
           touch android/gradle.properties
 
@@ -340,7 +329,7 @@ jobs:
           text = text.replace("\r\n", "\n")
           text = text.replace("\r", "\n")
 
-          # Repair corruption from previous attempts.
+          # Repair old corruption.
           text = text.replace(
               "falseandroid.newDsl=false",
               "false\nandroid.newDsl=false"
@@ -354,16 +343,13 @@ jobs:
           lines = []
 
           for line in text.split("\n"):
+
               stripped = line.strip()
 
-              if stripped.startswith(
-                  "android.newDsl="
-              ):
+              if stripped.startswith("android.newDsl="):
                   continue
 
-              if stripped.startswith(
-                  "android.builtInKotlin="
-              ):
+              if stripped.startswith("android.builtInKotlin="):
                   continue
 
               lines.append(line)
@@ -371,13 +357,8 @@ jobs:
           while lines and not lines[-1].strip():
               lines.pop()
 
-          lines.append(
-              "android.newDsl=false"
-          )
-
-          lines.append(
-              "android.builtInKotlin=false"
-          )
+          lines.append("android.newDsl=false")
+          lines.append("android.builtInKotlin=false")
 
           p.write_text(
               "\n".join(lines) + "\n",
@@ -386,14 +367,11 @@ jobs:
           PY
 
 
-          # ========================================================
+          # --------------------------------------------------------
           # FORCE GRADLE 8.11.1
-          # ========================================================
+          # --------------------------------------------------------
 
-          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
-
-          if [ ! -f "$WRAPPER" ]; then
-            cat > "$WRAPPER" <<'EOF'
+          cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
           distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip
@@ -402,48 +380,61 @@ jobs:
           zipStoreBase=GRADLE_USER_HOME
           zipStorePath=wrapper/dists
           EOF
-          else
 
-            python3 - <<'PY'
-          from pathlib import Path
-          import re
 
-          p = Path(
-              "android/gradle/wrapper/gradle-wrapper.properties"
-          )
+          # --------------------------------------------------------
+          # DOWNLOAD GRADLE 8.11.1
+          # --------------------------------------------------------
 
-          s = p.read_text(
-              encoding="utf-8",
-              errors="replace"
-          )
+          mkdir -p "$RUNNER_TEMP/gradle"
 
-          s = re.sub(
-              r'^distributionUrl=.*$',
-              r'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11.1-all.zip',
-              s,
-              flags=re.MULTILINE
-          )
+          if [ ! -d "$RUNNER_TEMP/gradle/gradle-8.11.1" ]; then
 
-          if "distributionUrl=" not in s:
-              s += (
-                  "\n"
-                  "distributionUrl="
-                  "https\\://services.gradle.org/"
-                  "distributions/gradle-8.11.1-all.zip\n"
-              )
+            echo "Downloading Gradle 8.11.1..."
 
-          p.write_text(
-              s,
-              encoding="utf-8"
-          )
-          PY
+            curl \
+              -fL \
+              --retry 5 \
+              --retry-delay 3 \
+              --connect-timeout 30 \
+              --max-time 900 \
+              "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip" \
+              -o "$RUNNER_TEMP/gradle/gradle.zip"
+
+            unzip -q \
+              "$RUNNER_TEMP/gradle/gradle.zip" \
+              -d "$RUNNER_TEMP/gradle"
 
           fi
 
 
-          # ========================================================
-          # FIX AGP ONLY IF IT IS 9.x
-          # ========================================================
+          # --------------------------------------------------------
+          # CREATE GRADLE WRAPPER SCRIPT
+          # --------------------------------------------------------
+
+          cat > android/gradlew <<'EOF'
+          #!/bin/sh
+
+          set -e
+
+          SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+          GRADLE_HOME="${RUNNER_TEMP}/gradle/gradle-8.11.1"
+
+          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
+            echo "Gradle 8.11.1 tidak ditemukan."
+            exit 1
+          fi
+
+          exec "$GRADLE_HOME/bin/gradle" "$@"
+          EOF
+
+          chmod +x android/gradlew
+
+
+          # --------------------------------------------------------
+          # AGP 9 -> AGP 8.7.3
+          # --------------------------------------------------------
 
           if [ -f android/settings.gradle.kts ]; then
 
@@ -458,10 +449,6 @@ jobs:
               errors="replace"
           )
 
-          # AGP 9.x requires new DSL.
-          # We keep AGP 8.x because Flutter projects
-          # using the legacy plugin path need newDsl=false.
-
           s = re.sub(
               r'(id\(["\']com\.android\.application["\']\)\s+version\s+["\'])9\.[^"\']+(["\'])',
               r'\g<1>8.7.3\g<2>',
@@ -474,10 +461,7 @@ jobs:
               s
           )
 
-          p.write_text(
-              s,
-              encoding="utf-8"
-          )
+          p.write_text(s, encoding="utf-8")
           PY
 
           fi
@@ -508,81 +492,54 @@ jobs:
               s
           )
 
-          p.write_text(
-              s,
-              encoding="utf-8"
-          )
+          p.write_text(s, encoding="utf-8")
           PY
 
           fi
 
 
-          # ========================================================
-          # PRINT FINAL CONFIG
-          # ========================================================
+          # --------------------------------------------------------
+          # SHOW CONFIG
+          # --------------------------------------------------------
 
           echo ""
-          echo "=========================================="
-          echo "FINAL GRADLE CONFIG"
-          echo "=========================================="
-
-          echo ""
-          echo "--- gradle.properties ---"
+          echo "========== GRADLE PROPERTIES =========="
           cat android/gradle.properties
 
           echo ""
-          echo "--- gradle-wrapper.properties ---"
+          echo "========== WRAPPER =========="
           cat android/gradle/wrapper/gradle-wrapper.properties
 
           echo ""
-          echo "--- settings.gradle* ---"
-
-          if [ -f android/settings.gradle ]; then
-            cat android/settings.gradle
-          fi
-
-          if [ -f android/settings.gradle.kts ]; then
-            cat android/settings.gradle.kts
-          fi
-
-          echo ""
-          echo "=========================================="
+          echo "========== GRADLE =========="
+          android/gradlew --version
 
 
-          # ========================================================
+          # --------------------------------------------------------
           # HARD VALIDATION
-          # ========================================================
+          # --------------------------------------------------------
+
+          android/gradlew --version |
+            grep -q "Gradle 8.11.1"
+
+          grep -qx \
+            "android.newDsl=false" \
+            android/gradle.properties
 
           if grep -Rqs \
             "android.enableJetifier=falseandroid" \
             android; then
 
-            echo "::error::Corrupted gradle.properties detected."
-            exit 1
-          fi
-
-          if ! grep -qx \
-            "android.newDsl=false" \
-            android/gradle.properties; then
-
-            echo "::error::android.newDsl=false missing."
-            exit 1
-          fi
-
-          if ! grep -q \
-            'gradle-8.11.1-all.zip' \
-            android/gradle/wrapper/gradle-wrapper.properties; then
-
-            echo "::error::Gradle 8.11.1 wrapper not configured."
+            echo "::error::gradle.properties corrupt."
             exit 1
           fi
 
 
       # ============================================================
-      # ANDROID APP CONFIG
+      # CONFIGURE ANDROID APP
       # ============================================================
 
-      - name: Configure Android app
+      - name: Configure Android
         env:
           APP_NAME: ${{ steps.payload.outputs.app_name }}
 
@@ -677,24 +634,7 @@ jobs:
 
 
       # ============================================================
-      # GRADLE CACHE
-      # ============================================================
-
-      - name: Restore Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
-
-          restore-keys: |
-            gradle-${{ runner.os }}-
-
-
-      # ============================================================
-      # CLEAN
+      # FLUTTER CLEAN
       # ============================================================
 
       - name: Flutter clean
@@ -725,36 +665,7 @@ jobs:
 
 
       # ============================================================
-      # VERIFY GRADLE VERSION BEFORE BUILD
-      # ============================================================
-
-      - name: Verify Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_ROOT"
-
-          echo "======================================"
-          echo "GRADLE VERSION"
-          echo "======================================"
-
-          ./gradlew --version
-
-          echo ""
-          echo "Expected:"
-          echo "Gradle 8.11.1"
-
-
-          ./gradlew --version |
-            grep -q "Gradle 8.11.1" || {
-              echo "::error::Wrong Gradle version."
-              exit 1
-            }
-
-
-      # ============================================================
-      # BUILD APK
+      # BUILD
       # ============================================================
 
       - name: Build APK
@@ -768,7 +679,7 @@ jobs:
           cd "$PROJECT_ROOT"
 
           echo "======================================"
-          echo "BUILD APK"
+          echo "BUILDING APK"
           echo "======================================"
 
           if [ "$BUILD_TYPE" = "debug" ]; then
@@ -837,8 +748,7 @@ jobs:
         with:
           name: apk-${{ inputs.jobId }}
 
-          path: |
-            output/app-${{ inputs.jobId }}.apk
+          path: output/app-${{ inputs.jobId }}.apk
 
           if-no-files-found: error
           retention-days: 3
