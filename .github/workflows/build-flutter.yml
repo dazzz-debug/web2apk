@@ -7,11 +7,13 @@ on:
         description: "Build Job ID"
         required: true
         type: string
+
       userId:
         description: "User ID"
         required: false
         default: "0"
         type: string
+
       payload:
         description: "Build payload JSON"
         required: true
@@ -36,15 +38,38 @@ jobs:
       PAYLOAD: ${{ inputs.payload }}
 
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout worker
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # SYSTEM DEPENDENCIES
+      # ============================================================
 
       - name: Install system packages
         shell: bash
         run: |
           set -euo pipefail
+
           sudo apt-get update
-          sudo apt-get install -y unzip curl wget jq python3 file
+
+          sudo apt-get install -y \
+            unzip \
+            curl \
+            wget \
+            jq \
+            python3 \
+            file
+
+
+      # ============================================================
+      # JAVA 17
+      # ============================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -52,8 +77,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Flutter is pinned. Do not use an unpinned "stable" channel because
-      # Flutter/Gradle compatibility can change when stable moves.
+
+      # ============================================================
+      # FLUTTER
+      # ============================================================
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -61,18 +89,44 @@ jobs:
           channel: stable
           cache: true
 
+
+      # ============================================================
+      # CHECK TOOLCHAIN
+      # ============================================================
+
       - name: Verify toolchain
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== FLUTTER ==="
+
+          echo "=========================================="
+          echo "FLUTTER"
+          echo "=========================================="
+
           flutter --version
-          echo "=== DART ==="
+
+          echo ""
+          echo "=========================================="
+          echo "DART"
+          echo "=========================================="
+
           dart --version
-          echo "=== JAVA ==="
+
+          echo ""
+          echo "=========================================="
+          echo "JAVA"
+          echo "=========================================="
+
           java -version
-          echo "=== GRADLE/JAVA HOME ==="
+
+          echo ""
+          echo "JAVA_HOME:"
           echo "$JAVA_HOME"
+
+
+      # ============================================================
+      # PARSE PAYLOAD
+      # ============================================================
 
       - name: Parse build payload
         id: payload
@@ -85,38 +139,89 @@ jobs:
           import os
 
           raw = os.environ["PAYLOAD"]
-          data = json.loads(raw)
 
-          mode = str(data.get("mode", "zip")).strip().lower()
-          url = str(data.get("url", "")).strip()
-          build_type = str(data.get("buildType", "release")).strip().lower()
+          try:
+              data = json.loads(raw)
+          except Exception as e:
+              raise SystemExit(
+                  f"Invalid payload JSON: {e}"
+              )
+
+          mode = str(
+              data.get("mode", "zip")
+          ).strip().lower()
+
+          url = str(
+              data.get("url", "")
+          ).strip()
+
+          build_type = str(
+              data.get("buildType", "release")
+          ).strip().lower()
 
           if mode != "zip":
-              raise SystemExit("This workflow expects payload.mode=zip")
+              raise SystemExit(
+                  "This workflow requires payload.mode=zip"
+              )
 
           if not url:
-              raise SystemExit("payload.url is required")
+              raise SystemExit(
+                  "payload.url is required"
+              )
 
-          if build_type not in ("release", "debug"):
+          if build_type not in (
+              "release",
+              "debug"
+          ):
               build_type = "release"
 
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"mode={mode}\n")
-              f.write(f"url={url}\n")
-              f.write(f"build_type={build_type}\n")
-          PY
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a",
+              encoding="utf-8"
+          ) as f:
+
+              f.write(
+                  f"mode={mode}\n"
+              )
+
+              f.write(
+                  f"url={url}\n"
+              )
+
+              f.write(
+                  f"build_type={build_type}\n"
+              )
+
+          print("Payload OK")
+          print("Mode:", mode)
+          print("Build type:", build_type)
+
+
+      # ============================================================
+      # DOWNLOAD SOURCE
+      # ============================================================
 
       - name: Download source ZIP
         env:
           SOURCE_URL: ${{ steps.payload.outputs.url }}
+
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf "$GITHUB_WORKSPACE/input" "$GITHUB_WORKSPACE/project"
-          mkdir -p "$GITHUB_WORKSPACE/input" "$GITHUB_WORKSPACE/project"
+          rm -rf \
+            "$GITHUB_WORKSPACE/input" \
+            "$GITHUB_WORKSPACE/project"
 
-          curl -fL \
+          mkdir -p \
+            "$GITHUB_WORKSPACE/input" \
+            "$GITHUB_WORKSPACE/project"
+
+          echo "Downloading source..."
+
+          curl \
+            -fL \
             --retry 5 \
             --retry-all-errors \
             --retry-delay 3 \
@@ -125,33 +230,132 @@ jobs:
             "$SOURCE_URL" \
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
-          test -s "$GITHUB_WORKSPACE/input/source.zip"
+          test -s \
+            "$GITHUB_WORKSPACE/input/source.zip"
 
-          unzip -q "$GITHUB_WORKSPACE/input/source.zip" \
+          echo ""
+          echo "ZIP:"
+          ls -lh \
+            "$GITHUB_WORKSPACE/input/source.zip"
+
+          echo ""
+          echo "Extracting..."
+
+          unzip -q \
+            "$GITHUB_WORKSPACE/input/source.zip" \
             -d "$GITHUB_WORKSPACE/project"
+
+          echo ""
+          echo "Extraction complete."
+
+
+      # ============================================================
+      # FIND FLUTTER PROJECT
+      # ============================================================
 
       - name: Locate Flutter project
         shell: bash
         run: |
           set -euo pipefail
 
-          ROOT="$(find "$GITHUB_WORKSPACE/project" \
-            -type f -name pubspec.yaml \
-            -not -path '*/.dart_tool/*' \
-            -print -quit | xargs -r dirname)"
+          ROOT="$(
+            find \
+              "$GITHUB_WORKSPACE/project" \
+              -type f \
+              -name "pubspec.yaml" \
+              -not -path "*/.dart_tool/*" \
+              -print \
+              -quit |
+              xargs -r dirname
+          )"
 
           if [ -z "${ROOT:-}" ]; then
-            echo "::error::pubspec.yaml was not found in source ZIP."
-            find "$GITHUB_WORKSPACE/project" -maxdepth 4 -type f | head -200
+
+            echo "::error::pubspec.yaml was not found."
+
+            echo ""
+            echo "Files inside source:"
+
+            find \
+              "$GITHUB_WORKSPACE/project" \
+              -maxdepth 5 \
+              -type f \
+              -print |
+              head -300
+
             exit 1
+
           fi
 
-          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo \
+            "PROJECT_ROOT=$ROOT" \
+            >> "$GITHUB_ENV"
 
-          echo "Project root:"
+          echo ""
+          echo "=========================================="
+          echo "PROJECT ROOT"
+          echo "=========================================="
+
           echo "$ROOT"
 
-      - name: Inspect Android project
+
+      # ============================================================
+      # INSPECT PROJECT
+      # ============================================================
+
+      - name: Inspect Flutter project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          echo "=========================================="
+          echo "PROJECT"
+          echo "=========================================="
+
+          pwd
+
+          echo ""
+          echo "=========================================="
+          echo "ROOT FILES"
+          echo "=========================================="
+
+          ls -la
+
+          echo ""
+          echo "=========================================="
+          echo "PUBSPEC"
+          echo "=========================================="
+
+          sed -n '1,260p' \
+            pubspec.yaml
+
+          echo ""
+          echo "=========================================="
+          echo "ANDROID FILES"
+          echo "=========================================="
+
+          find \
+            android \
+            -maxdepth 4 \
+            -type f \
+            \( \
+              -name "*.gradle" \
+              -o -name "*.gradle.kts" \
+              -o -name "gradle.properties" \
+              -o -name "gradle-wrapper.properties" \
+              -o -name "gradlew" \
+            \) \
+            -print |
+            sort
+
+
+      # ============================================================
+      # ANDROID COMPATIBILITY
+      # ============================================================
+
+      - name: Apply Android compatibility flags
         shell: bash
         run: |
           set -euo pipefail
@@ -159,98 +363,140 @@ jobs:
           cd "$PROJECT_ROOT"
 
           if [ ! -d android ]; then
-            echo "::error::Flutter project has no android directory."
+
+            echo "::error::android directory not found."
+
             exit 1
+
           fi
 
-          echo "=== PROJECT FILES ==="
-          ls -la
-
-          echo "=== ANDROID FILES ==="
-          find android -maxdepth 3 -type f \
-            \( -name '*.gradle' -o -name '*.gradle.kts' -o -name 'gradle.properties' -o -name 'gradle-wrapper.properties' \) \
-            -print | sort
-
-          echo "=== PUBSPEC ==="
-          sed -n '1,220p' pubspec.yaml
-
-      - name: Apply Flutter Android compatibility flags
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_ROOT"
-
           mkdir -p android
+
           touch android/gradle.properties
 
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("android/gradle.properties")
+          p = Path(
+              "android/gradle.properties"
+          )
 
           text = p.read_text(
               encoding="utf-8",
               errors="replace"
-          ).replace("\r\n", "\n").replace("\r", "\n")
+          )
 
-          # Remove only duplicate copies of these two compatibility flags.
-          # Do not rewrite AGP/Kotlin/Gradle versions from the source project.
+          text = text.replace(
+              "\r\n",
+              "\n"
+          )
+
+          text = text.replace(
+              "\r",
+              "\n"
+          )
+
           kept = []
+
           for line in text.splitlines():
+
               stripped = line.strip()
-              if stripped.startswith("android.newDsl="):
+
+              if stripped.startswith(
+                  "android.newDsl="
+              ):
                   continue
-              if stripped.startswith("android.builtInKotlin="):
+
+              if stripped.startswith(
+                  "android.builtInKotlin="
+              ):
                   continue
+
               kept.append(line)
 
-          # Flutter's error specifically asks for the new Android DSL opt-out
-          # when using a project that has not migrated to the new DSL.
-          kept.append("android.newDsl=false")
+          kept.append(
+              "android.newDsl=false"
+          )
 
-          # Keep built-in Kotlin disabled for older project structures.
-          kept.append("android.builtInKotlin=false")
+          kept.append(
+              "android.builtInKotlin=false"
+          )
 
-          p.write_text("\n".join(kept) + "\n", encoding="utf-8")
+          p.write_text(
+              "\n".join(kept) + "\n",
+              encoding="utf-8"
+          )
           PY
 
-          echo "=== FINAL gradle.properties ==="
-          cat android/gradle.properties
+          echo ""
+          echo "=========================================="
+          echo "gradle.properties"
+          echo "=========================================="
 
-      - name: Validate Gradle configuration
+          cat \
+            android/gradle.properties
+
+
+      # ============================================================
+      # SHOW GRADLE CONFIG
+      # ============================================================
+
+      - name: Inspect Gradle configuration
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
 
-          echo "=== AGP REFERENCES ==="
+          echo "=========================================="
+          echo "AGP REFERENCES"
+          echo "=========================================="
+
           grep -RInE \
             'com\.android\.(application|library)|com\.android\.tools\.build:gradle' \
             android \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            --include='*.toml' \
+            --include="*.gradle" \
+            --include="*.gradle.kts" \
+            --include="*.toml" \
             2>/dev/null || true
 
-          echo "=== KOTLIN REFERENCES ==="
+          echo ""
+          echo "=========================================="
+          echo "KOTLIN REFERENCES"
+          echo "=========================================="
+
           grep -RInE \
             'org\.jetbrains\.kotlin|kotlin\("android"\)|kotlin_version' \
             android \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            --include='*.toml' \
+            --include="*.gradle" \
+            --include="*.gradle.kts" \
+            --include="*.toml" \
             2>/dev/null || true
 
-          echo "=== WRAPPER ==="
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-            cat android/gradle/wrapper/gradle-wrapper.properties
+          echo ""
+          echo "=========================================="
+          echo "GRADLE WRAPPER"
+          echo "=========================================="
+
+          if [ -f \
+            android/gradle/wrapper/gradle-wrapper.properties
+          ]; then
+
+            cat \
+              android/gradle/wrapper/gradle-wrapper.properties
+
           else
-            echo "No Gradle wrapper supplied by source."
+
+            echo "No Gradle wrapper properties."
+
           fi
 
-      - name: Repair missing Gradle wrapper only if necessary
+
+      # ============================================================
+      # REPAIR GRADLE WRAPPER
+      # ============================================================
+
+      - name: Repair missing Gradle wrapper
         shell: bash
         run: |
           set -euo pipefail
@@ -258,98 +504,284 @@ jobs:
           cd "$PROJECT_ROOT"
 
           if [ -x android/gradlew ]; then
-            echo "Source Gradle wrapper exists; keeping it unchanged."
+
+            echo "Source Gradle wrapper exists."
+
+            chmod +x android/gradlew
+
             exit 0
+
           fi
 
           echo "Source has no executable Gradle wrapper."
-          mkdir -p android/gradle/wrapper
+
+          mkdir -p \
+            android/gradle/wrapper
 
           GRADLE_VERSION="8.11.1"
+
           GRADLE_HOME="$RUNNER_TEMP/gradle-$GRADLE_VERSION"
 
-          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
-            rm -rf "$GRADLE_HOME"
+          GRADLE_ZIP="$RUNNER_TEMP/gradle-$GRADLE_VERSION.zip"
 
-            curl -fL \
+          GRADLE_EXTRACT="$RUNNER_TEMP/gradle-extract-$GRADLE_VERSION"
+
+
+          # ----------------------------------------------------------
+          # DOWNLOAD GRADLE
+          # ----------------------------------------------------------
+
+          if [ ! -x \
+            "$GRADLE_HOME/bin/gradle"
+          ]; then
+
+            rm -rf \
+              "$GRADLE_HOME" \
+              "$GRADLE_EXTRACT" \
+              "$GRADLE_ZIP"
+
+            mkdir -p \
+              "$GRADLE_EXTRACT"
+
+            echo ""
+            echo "Downloading Gradle $GRADLE_VERSION..."
+
+            curl \
+              -fL \
               --retry 5 \
               --retry-all-errors \
               --retry-delay 3 \
               --connect-timeout 30 \
               --max-time 900 \
               "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
-              -o "$RUNNER_TEMP/gradle.zip"
+              -o "$GRADLE_ZIP"
 
-            unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
-            mv "$RUNNER_TEMP/gradle-$GRADLE_VERSION" "$GRADLE_HOME"
+            test -s \
+              "$GRADLE_ZIP"
+
+            echo ""
+            echo "Extracting Gradle..."
+
+            unzip -q \
+              "$GRADLE_ZIP" \
+              -d "$GRADLE_EXTRACT"
+
+            test -x \
+              "$GRADLE_EXTRACT/gradle-${GRADLE_VERSION}/bin/gradle"
+
+            # IMPORTANT:
+            # extraction directory and final directory
+            # are different, so mv cannot move a directory
+            # into itself.
+
+            mv \
+              "$GRADLE_EXTRACT/gradle-${GRADLE_VERSION}" \
+              "$GRADLE_HOME"
+
           fi
+
+
+          # ----------------------------------------------------------
+          # VERIFY GRADLE
+          # ----------------------------------------------------------
+
+          if [ ! -x \
+            "$GRADLE_HOME/bin/gradle"
+          ]; then
+
+            echo "::error::Gradle executable was not created."
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "GRADLE VERSION"
+          echo "=========================================="
+
+          "$GRADLE_HOME/bin/gradle" \
+            --version
+
+
+          # ----------------------------------------------------------
+          # CREATE GRADLEW
+          # ----------------------------------------------------------
 
           cat > android/gradlew <<EOF
           #!/bin/sh
+
           set -e
+
           exec "$GRADLE_HOME/bin/gradle" "\$@"
           EOF
 
-          chmod +x android/gradlew
+          chmod +x \
+            android/gradlew
 
-          echo "Created fallback Gradle wrapper using Gradle $GRADLE_VERSION."
+
+          # ----------------------------------------------------------
+          # CREATE WRAPPER PROPERTIES
+          # ----------------------------------------------------------
+
+          cat > \
+            android/gradle/wrapper/gradle-wrapper.properties \
+            <<EOF
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\\://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-all.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+
+          echo ""
+          echo "=========================================="
+          echo "GRADLE WRAPPER READY"
+          echo "=========================================="
+
+          ls -lh \
+            android/gradlew
+
+          cat \
+            android/gradle/wrapper/gradle-wrapper.properties
+
+
+      # ============================================================
+      # FLUTTER CLEAN
+      # ============================================================
 
       - name: Flutter clean
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$PROJECT_ROOT"
+
           flutter clean
-          rm -rf .dart_tool build
+
+          rm -rf \
+            .dart_tool \
+            build
+
+
+      # ============================================================
+      # PUB GET
+      # ============================================================
 
       - name: Flutter pub get
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$PROJECT_ROOT"
+
           flutter pub get
+
+
+      # ============================================================
+      # BUILD APK
+      # ============================================================
 
       - name: Build APK
         env:
           BUILD_TYPE: ${{ steps.payload.outputs.build_type }}
+
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
 
+          echo ""
+          echo "=========================================="
+          echo "BUILDING APK"
+          echo "=========================================="
+
+          echo ""
+          echo "Flutter:"
+          flutter --version
+
+          echo ""
+          echo "Build type:"
+          echo "$BUILD_TYPE"
+
           if [ "$BUILD_TYPE" = "debug" ]; then
+
             flutter build apk \
               --debug \
               --no-tree-shake-icons
+
           else
+
             flutter build apk \
               --release \
               --no-tree-shake-icons
+
           fi
+
+
+      # ============================================================
+      # COLLECT APK
+      # ============================================================
 
       - name: Collect APK
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/output"
 
-          APK="$(find "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
-            -type f -name '*.apk' \
-            -print -quit)"
+          APK="$(
+            find \
+              "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
+              -type f \
+              -name "*.apk" \
+              -print \
+              -quit
+          )"
 
           if [ -z "${APK:-}" ]; then
-            echo "::error::No APK was produced."
-            find "$PROJECT_ROOT/build" -type f -name '*.apk' -print 2>/dev/null || true
+
+            echo "::error::APK was not produced."
+
+            echo ""
+            echo "Searching build directory..."
+
+            find \
+              "$PROJECT_ROOT/build" \
+              -type f \
+              -name "*.apk" \
+              -print \
+              2>/dev/null || true
+
             exit 1
+
           fi
 
-          cp "$APK" "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
+          cp \
+            "$APK" \
+            "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-          echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" >> "$GITHUB_ENV"
+          echo \
+            "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
+            >> "$GITHUB_ENV"
 
-          ls -lh "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
+          echo ""
+          echo "=========================================="
+          echo "APK"
+          echo "=========================================="
+
+          ls -lh \
+            "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
+
+
+      # ============================================================
+      # UPLOAD ARTIFACT
+      # ============================================================
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -358,6 +790,11 @@ jobs:
           path: output/app-${{ inputs.jobId }}.apk
           if-no-files-found: error
           retention-days: 3
+
+
+      # ============================================================
+      # SUMMARY
+      # ============================================================
 
       - name: Build summary
         if: always()
@@ -370,7 +807,11 @@ jobs:
             echo "- User ID: \`${USER_ID}\`"
             echo "- Mode: \`${{ steps.payload.outputs.mode }}\`"
             echo "- Build type: \`${{ steps.payload.outputs.build_type }}\`"
+
             if [ -n "${APK:-}" ] && [ -f "$APK" ]; then
+
               echo "- APK size: $(du -h "$APK" | cut -f1)"
+
             fi
+
           } >> "$GITHUB_STEP_SUMMARY"
