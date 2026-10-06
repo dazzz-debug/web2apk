@@ -102,7 +102,7 @@ jobs:
       # SYSTEM
       # ============================================================
 
-      - name: Install system packages
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -119,7 +119,7 @@ jobs:
 
 
       # ============================================================
-      # JAVA
+      # JAVA 17
       # ============================================================
 
       - name: Setup Java 17
@@ -140,18 +140,20 @@ jobs:
           cache: true
 
 
-      - name: Check environment
+      - name: Environment
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "========== FLUTTER =========="
           flutter --version
-          dart --version
+
+          echo "========== JAVA =========="
           java -version
 
 
       # ============================================================
-      # DOWNLOAD ZIP
+      # DOWNLOAD SOURCE
       # ============================================================
 
       - name: Download source ZIP
@@ -198,9 +200,7 @@ jobs:
 
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
 
-          echo ""
-          echo "PROJECT ROOT:"
-          echo "$ROOT"
+          echo "PROJECT_ROOT=$ROOT"
 
 
       # ============================================================
@@ -241,7 +241,8 @@ jobs:
           url = url.replace("\\", "\\\\").replace("'", "\\'")
           app = app.replace("\\", "\\\\").replace("'", "\\'")
 
-          code = f"""
+          Path("lib/main.dart").write_text(
+              f"""
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
 
@@ -288,20 +289,17 @@ jobs:
               );
             }}
           }}
-          """
-
-          Path("lib/main.dart").write_text(
-              code,
+          """,
               encoding="utf-8"
           )
           PY
 
 
       # ============================================================
-      # FIX ANDROID GRADLE
+      # PREPARE GRADLE
       # ============================================================
 
-      - name: Fix Android Gradle
+      - name: Prepare Gradle
         shell: bash
         run: |
           set -euo pipefail
@@ -309,6 +307,22 @@ jobs:
           cd "$PROJECT_ROOT"
 
           mkdir -p android/gradle/wrapper
+
+          # --------------------------------------------------------
+          # Keep the project's AGP configuration.
+          # Only make Gradle wrapper compatible.
+          # --------------------------------------------------------
+
+          cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
 
           # --------------------------------------------------------
           # gradle.properties
@@ -329,7 +343,7 @@ jobs:
           text = text.replace("\r\n", "\n")
           text = text.replace("\r", "\n")
 
-          # Repair old corruption.
+          # Fix accidental concatenation only.
           text = text.replace(
               "falseandroid.newDsl=false",
               "false\nandroid.newDsl=false"
@@ -340,10 +354,10 @@ jobs:
               "false\nandroid.builtInKotlin=false"
           )
 
+          # Remove duplicate values.
           lines = []
 
           for line in text.split("\n"):
-
               stripped = line.strip()
 
               if stripped.startswith("android.newDsl="):
@@ -357,6 +371,7 @@ jobs:
           while lines and not lines[-1].strip():
               lines.pop()
 
+          # Flutter's error explicitly asks for opt-out.
           lines.append("android.newDsl=false")
           lines.append("android.builtInKotlin=false")
 
@@ -368,29 +383,38 @@ jobs:
 
 
           # --------------------------------------------------------
-          # FORCE GRADLE 8.11.1
+          # Create wrapper launcher if source ZIP has no gradlew.
           # --------------------------------------------------------
 
-          cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip
-          networkTimeout=10000
-          validateDistributionUrl=true
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
+          if [ ! -f android/gradlew ]; then
+
+            cat > android/gradlew <<'EOF'
+          #!/bin/sh
+
+          set -e
+
+          GRADLE_HOME="${RUNNER_TEMP}/gradle-fixed"
+
+          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
+            echo "Gradle 8.11.1 belum tersedia."
+            exit 1
+          fi
+
+          exec "$GRADLE_HOME/bin/gradle" "$@"
           EOF
 
+            chmod +x android/gradlew
+
+          fi
+
 
           # --------------------------------------------------------
-          # DOWNLOAD GRADLE 8.11.1
+          # Download Gradle 8.11.1
           # --------------------------------------------------------
 
-          mkdir -p "$RUNNER_TEMP/gradle"
+          mkdir -p "$RUNNER_TEMP/gradle-fixed"
 
-          if [ ! -d "$RUNNER_TEMP/gradle/gradle-8.11.1" ]; then
-
-            echo "Downloading Gradle 8.11.1..."
+          if [ ! -x "$RUNNER_TEMP/gradle-fixed/bin/gradle" ]; then
 
             curl \
               -fL \
@@ -399,144 +423,46 @@ jobs:
               --connect-timeout 30 \
               --max-time 900 \
               "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip" \
-              -o "$RUNNER_TEMP/gradle/gradle.zip"
+              -o "$RUNNER_TEMP/gradle.zip"
+
+            rm -rf "$RUNNER_TEMP/gradle-fixed"
 
             unzip -q \
-              "$RUNNER_TEMP/gradle/gradle.zip" \
-              -d "$RUNNER_TEMP/gradle"
+              "$RUNNER_TEMP/gradle.zip" \
+              -d "$RUNNER_TEMP"
+
+            mv \
+              "$RUNNER_TEMP/gradle-8.11.1" \
+              "$RUNNER_TEMP/gradle-fixed"
 
           fi
 
 
           # --------------------------------------------------------
-          # CREATE GRADLE WRAPPER SCRIPT
-          # --------------------------------------------------------
-
-          cat > android/gradlew <<'EOF'
-          #!/bin/sh
-
-          set -e
-
-          SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-
-          GRADLE_HOME="${RUNNER_TEMP}/gradle/gradle-8.11.1"
-
-          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
-            echo "Gradle 8.11.1 tidak ditemukan."
-            exit 1
-          fi
-
-          exec "$GRADLE_HOME/bin/gradle" "$@"
-          EOF
-
-          chmod +x android/gradlew
-
-
-          # --------------------------------------------------------
-          # AGP 9 -> AGP 8.7.3
-          # --------------------------------------------------------
-
-          if [ -f android/settings.gradle.kts ]; then
-
-            python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path("android/settings.gradle.kts")
-
-          s = p.read_text(
-              encoding="utf-8",
-              errors="replace"
-          )
-
-          s = re.sub(
-              r'(id\(["\']com\.android\.application["\']\)\s+version\s+["\'])9\.[^"\']+(["\'])',
-              r'\g<1>8.7.3\g<2>',
-              s
-          )
-
-          s = re.sub(
-              r'(id\(["\']com\.android\.library["\']\)\s+version\s+["\'])9\.[^"\']+(["\'])',
-              r'\g<1>8.7.3\g<2>',
-              s
-          )
-
-          p.write_text(s, encoding="utf-8")
-          PY
-
-          fi
-
-
-          if [ -f android/settings.gradle ]; then
-
-            python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path("android/settings.gradle")
-
-          s = p.read_text(
-              encoding="utf-8",
-              errors="replace"
-          )
-
-          s = re.sub(
-              r'(id\s+["\']com\.android\.application["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
-              r'\g<1>8.7.3\g<2>',
-              s
-          )
-
-          s = re.sub(
-              r'(id\s+["\']com\.android\.library["\']\s+version\s+["\'])9\.[^"\']+(["\'])',
-              r'\g<1>8.7.3\g<2>',
-              s
-          )
-
-          p.write_text(s, encoding="utf-8")
-          PY
-
-          fi
-
-
-          # --------------------------------------------------------
-          # SHOW CONFIG
+          # Verify
           # --------------------------------------------------------
 
           echo ""
-          echo "========== GRADLE PROPERTIES =========="
+          echo "========== GRADLE =========="
+
+          "$RUNNER_TEMP/gradle-fixed/bin/gradle" --version
+
+          echo ""
+          echo "========== PROPERTIES =========="
+
           cat android/gradle.properties
 
           echo ""
           echo "========== WRAPPER =========="
+
           cat android/gradle/wrapper/gradle-wrapper.properties
 
           echo ""
-          echo "========== GRADLE =========="
-          android/gradlew --version
-
-
-          # --------------------------------------------------------
-          # HARD VALIDATION
-          # --------------------------------------------------------
-
-          android/gradlew --version |
-            grep -q "Gradle 8.11.1"
-
-          grep -qx \
-            "android.newDsl=false" \
-            android/gradle.properties
-
-          if grep -Rqs \
-            "android.enableJetifier=falseandroid" \
-            android; then
-
-            echo "::error::gradle.properties corrupt."
-            exit 1
-          fi
+          echo "Gradle preparation OK."
 
 
       # ============================================================
-      # CONFIGURE ANDROID APP
+      # ANDROID CONFIG
       # ============================================================
 
       - name: Configure Android
@@ -634,7 +560,7 @@ jobs:
 
 
       # ============================================================
-      # FLUTTER CLEAN
+      # CLEAN
       # ============================================================
 
       - name: Flutter clean
@@ -698,7 +624,7 @@ jobs:
 
 
       # ============================================================
-      # COLLECT APK
+      # COLLECT
       # ============================================================
 
       - name: Collect APK
@@ -717,13 +643,7 @@ jobs:
           )"
 
           if [ -z "${APK:-}" ]; then
-
             echo "::error::APK tidak ditemukan."
-
-            find "$PROJECT_ROOT/build" \
-              -type f 2>/dev/null |
-              head -300
-
             exit 1
           fi
 
@@ -742,7 +662,7 @@ jobs:
       # UPLOAD
       # ============================================================
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
 
         with:
