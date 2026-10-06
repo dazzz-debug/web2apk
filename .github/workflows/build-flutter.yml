@@ -39,16 +39,12 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
-
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ============================================================
-      # PARSE PAYLOAD
-      # ============================================================
+      # ==========================================================
+      # PAYLOAD
+      # ==========================================================
 
       - name: Parse payload
         id: payload
@@ -62,10 +58,7 @@ jobs:
 
           data = json.loads(os.environ["PAYLOAD"])
 
-          mode = str(
-              data.get("mode", "zip")
-          ).lower()
-
+          mode = str(data.get("mode", "zip")).lower()
           build_type = str(
               data.get("buildType", "release")
           ).lower()
@@ -111,34 +104,18 @@ jobs:
               os.environ["GITHUB_OUTPUT"],
               "a"
           ) as f:
-              f.write(
-                  f"mode={mode}\n"
-              )
 
-              f.write(
-                  f"build_type={build_type}\n"
-              )
-
-              f.write(
-                  f"url={url}\n"
-              )
-
-              f.write(
-                  f"app_name={app_name}\n"
-              )
-
-              f.write(
-                  f"icon_url={icon_url}\n"
-              )
-
-              f.write(
-                  f"project_name={safe}\n"
-              )
+              f.write(f"mode={mode}\n")
+              f.write(f"build_type={build_type}\n")
+              f.write(f"url={url}\n")
+              f.write(f"app_name={app_name}\n")
+              f.write(f"icon_url={icon_url}\n")
+              f.write(f"project_name={safe}\n")
           PY
 
-      # ============================================================
-      # SYSTEM PACKAGES
-      # ============================================================
+      # ==========================================================
+      # PACKAGES
+      # ==========================================================
 
       - name: Install system packages
         shell: bash
@@ -156,9 +133,9 @@ jobs:
             file \
             imagemagick
 
-      # ============================================================
+      # ==========================================================
       # JAVA
-      # ============================================================
+      # ==========================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -166,9 +143,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # ============================================================
+      # ==========================================================
       # FLUTTER
-      # ============================================================
+      # ==========================================================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -177,15 +154,14 @@ jobs:
           cache: true
 
       - name: Check environment
-        shell: bash
         run: |
           flutter --version
           dart --version
           java -version
 
-      # ============================================================
-      # ZIP MODE
-      # ============================================================
+      # ==========================================================
+      # ZIP BUILD
+      # ==========================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
@@ -198,8 +174,6 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
-          echo "Downloading source ZIP..."
-
           curl -fL \
             --retry 5 \
             --retry-delay 3 \
@@ -208,18 +182,11 @@ jobs:
             "$SOURCE_URL" \
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
-          if [ ! -s "$GITHUB_WORKSPACE/input/source.zip" ]; then
-            echo "::error::Source ZIP kosong."
-            exit 1
-          fi
-
-          echo "Extracting source..."
+          test -s "$GITHUB_WORKSPACE/input/source.zip"
 
           unzip -q \
             "$GITHUB_WORKSPACE/input/source.zip" \
             -d "$GITHUB_WORKSPACE/project"
-
-          echo "Searching pubspec.yaml..."
 
           ROOT="$(
             find \
@@ -231,30 +198,22 @@ jobs:
           )"
 
           if [ -z "${ROOT:-}" ]; then
-
             echo "::error::pubspec.yaml tidak ditemukan."
-
-            echo "SOURCE CONTENT:"
-            find \
-              "$GITHUB_WORKSPACE/project" \
+            find "$GITHUB_WORKSPACE/project" \
               -maxdepth 5 \
               -type f |
-            head -300
-
+              head -300
             exit 1
           fi
-
-          echo "======================================"
-          echo "FLUTTER PROJECT:"
-          echo "$ROOT"
-          echo "======================================"
 
           echo "PROJECT_ROOT=$ROOT" \
             >> "$GITHUB_ENV"
 
-      # ============================================================
-      # URL MODE
-      # ============================================================
+          echo "Project: $ROOT"
+
+      # ==========================================================
+      # URL BUILD
+      # ==========================================================
 
       - name: Create Web2APK project
         if: steps.payload.outputs.mode == 'url'
@@ -286,17 +245,8 @@ jobs:
           url = os.environ["TARGET_URL"]
           app = os.environ["APP_NAME"]
 
-          url = (
-              url
-              .replace("\\", "\\\\")
-              .replace("'", "\\'")
-          )
-
-          app = (
-              app
-              .replace("\\", "\\\\")
-              .replace("'", "\\'")
-          )
+          url = url.replace("\\", "\\\\").replace("'", "\\'")
+          app = app.replace("\\", "\\\\").replace("'", "\\'")
 
           code = f"""
           import 'package:flutter/material.dart';
@@ -323,16 +273,7 @@ jobs:
 
               controller = WebViewController()
                 ..setJavaScriptMode(
-                  JavaScriptMode.unrestricted,
-                )
-                ..setNavigationDelegate(
-                  NavigationDelegate(
-                    onWebResourceError: (error) {{
-                      debugPrint(
-                        error.description
-                      );
-                    }},
-                  ),
+                  JavaScriptMode.unrestricted
                 )
                 ..loadRequest(
                   Uri.parse('{url}')
@@ -347,7 +288,7 @@ jobs:
                 home: Scaffold(
                   body: SafeArea(
                     child: WebViewWidget(
-                      controller: controller,
+                      controller: controller
                     ),
                   ),
                 ),
@@ -356,19 +297,17 @@ jobs:
           }}
           """
 
-          Path(
-              "lib/main.dart"
-          ).write_text(
+          Path("lib/main.dart").write_text(
               code,
               encoding="utf-8"
           )
           PY
 
-      # ============================================================
-      # AGP 9 COMPATIBILITY FIX
-      # ============================================================
+      # ==========================================================
+      # CRITICAL GRADLE FIX
+      # ==========================================================
 
-      - name: Fix Flutter AGP 9 compatibility
+      - name: Repair Android Gradle properties
         shell: bash
         run: |
           set -euo pipefail
@@ -377,32 +316,111 @@ jobs:
 
           mkdir -p android
 
-          touch android/gradle.properties
+          PROPERTY_FILE="android/gradle.properties"
 
-          # Remove old/conflicting values
-          sed -i \
-            '/^[[:space:]]*android\.newDsl[[:space:]]*=/d' \
-            android/gradle.properties || true
+          if [ -f "$PROPERTY_FILE" ]; then
 
-          sed -i \
-            '/^[[:space:]]*android\.builtInKotlin[[:space:]]*=/d' \
-            android/gradle.properties || true
+            # Normalize CRLF -> LF
+            sed -i 's/\r$//' "$PROPERTY_FILE"
 
-          # AGP 9 compatibility
-          echo "android.newDsl=false" \
-            >> android/gradle.properties
+          else
 
-          echo "android.builtInKotlin=false" \
-            >> android/gradle.properties
+            touch "$PROPERTY_FILE"
+
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("android/gradle.properties")
+
+          if p.exists():
+              raw = p.read_text(
+                  encoding="utf-8",
+                  errors="replace"
+              )
+          else:
+              raw = ""
+
+          # Normalize all line endings.
+          raw = raw.replace("\r\n", "\n")
+          raw = raw.replace("\r", "\n")
+
+          # Fix the exact corruption caused by previous workflow.
+          raw = raw.replace(
+              "falseandroid.newDsl=false",
+              "false\nandroid.newDsl=false"
+          )
+
+          raw = raw.replace(
+              "falseandroid.builtInKotlin=false",
+              "false\nandroid.builtInKotlin=false"
+          )
+
+          # Remove existing versions of the properties.
+          lines = []
+
+          for line in raw.split("\n"):
+
+              stripped = line.strip()
+
+              if stripped.startswith(
+                  "android.newDsl="
+              ):
+                  continue
+
+              if stripped.startswith(
+                  "android.builtInKotlin="
+              ):
+                  continue
+
+              lines.append(line)
+
+          # Remove trailing blank lines.
+          while lines and not lines[-1].strip():
+              lines.pop()
+
+          # Add clean properties.
+          lines.append(
+              "android.newDsl=false"
+          )
+
+          lines.append(
+              "android.builtInKotlin=false"
+          )
+
+          p.write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8",
+              newline="\n"
+          )
+          PY
 
           echo ""
-          echo "===== android/gradle.properties ====="
-          cat android/gradle.properties
-          echo "======================================"
+          echo "========== gradle.properties =========="
+          cat -n android/gradle.properties
+          echo "======================================="
 
-      # ============================================================
+          # Verify that values are actually valid.
+          if grep -q \
+            "android.enableJetifier=falseandroid" \
+            android/gradle.properties; then
+
+            echo "::error::gradle.properties masih corrupt."
+            exit 1
+          fi
+
+          if ! grep -qx \
+            "android.newDsl=false" \
+            android/gradle.properties; then
+
+            echo "::error::android.newDsl=false tidak ditemukan."
+            exit 1
+          fi
+
+      # ==========================================================
       # ANDROID CONFIG
-      # ============================================================
+      # ==========================================================
 
       - name: Configure Android
         env:
@@ -426,7 +444,6 @@ jobs:
               .replace('"', '\\"')
           )
 
-          # AndroidManifest
           manifest = Path(
               "android/app/src/main/AndroidManifest.xml"
           )
@@ -449,7 +466,6 @@ jobs:
                   encoding="utf-8"
               )
 
-          # Groovy Gradle
           gradle = Path(
               "android/app/build.gradle"
           )
@@ -471,7 +487,6 @@ jobs:
                   encoding="utf-8"
               )
 
-          # Kotlin Gradle
           gradle_kts = Path(
               "android/app/build.gradle.kts"
           )
@@ -494,9 +509,9 @@ jobs:
               )
           PY
 
-      # ============================================================
+      # ==========================================================
       # GRADLE CACHE
-      # ============================================================
+      # ==========================================================
 
       - name: Restore Gradle cache
         uses: actions/cache@v4
@@ -508,9 +523,9 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # ============================================================
-      # DOWNLOAD DEPENDENCIES
-      # ============================================================
+      # ==========================================================
+      # FLUTTER
+      # ==========================================================
 
       - name: Flutter clean
         shell: bash
@@ -533,24 +548,9 @@ jobs:
 
           flutter pub get
 
-      # ============================================================
-      # ANALYZE
-      # ============================================================
-
-      - name: Analyze project
-        shell: bash
-        run: |
-          cd "$PROJECT_ROOT"
-
-          dart format lib || true
-
-          flutter analyze \
-            --no-fatal-infos \
-            --no-fatal-warnings || true
-
-      # ============================================================
+      # ==========================================================
       # BUILD
-      # ============================================================
+      # ==========================================================
 
       - name: Build APK
         env:
@@ -560,8 +560,6 @@ jobs:
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
-
-          echo "BUILD TYPE: $BUILD_TYPE"
 
           if [ "$BUILD_TYPE" = "debug" ]; then
 
@@ -577,9 +575,9 @@ jobs:
 
           fi
 
-      # ============================================================
-      # FIND APK
-      # ============================================================
+      # ==========================================================
+      # COLLECT
+      # ==========================================================
 
       - name: Collect APK
         shell: bash
@@ -598,9 +596,8 @@ jobs:
 
           if [ -z "${APK:-}" ]; then
 
-            echo "::error::APK hasil build tidak ditemukan."
+            echo "::error::APK tidak ditemukan."
 
-            echo "BUILD DIRECTORY:"
             find \
               "$PROJECT_ROOT/build" \
               -type f 2>/dev/null |
@@ -609,9 +606,6 @@ jobs:
             exit 1
           fi
 
-          echo "APK FOUND:"
-          echo "$APK"
-
           cp \
             "$APK" \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
@@ -619,14 +613,12 @@ jobs:
           echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
             >> "$GITHUB_ENV"
 
-          echo ""
-          echo "FINAL APK:"
           ls -lh \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-      # ============================================================
+      # ==========================================================
       # ARTIFACT
-      # ============================================================
+      # ==========================================================
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -636,9 +628,9 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      # ============================================================
+      # ==========================================================
       # SUMMARY
-      # ============================================================
+      # ==========================================================
 
       - name: Build summary
         if: always()
