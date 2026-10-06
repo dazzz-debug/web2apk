@@ -39,12 +39,17 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==========================================================
-      # PAYLOAD
-      # ==========================================================
+
+      # ============================================================
+      # PARSE PAYLOAD
+      # ============================================================
 
       - name: Parse payload
         id: payload
@@ -59,34 +64,18 @@ jobs:
           data = json.loads(os.environ["PAYLOAD"])
 
           mode = str(data.get("mode", "zip")).lower()
-          build_type = str(
-              data.get("buildType", "release")
-          ).lower()
-
-          url = str(
-              data.get("url", "")
-          ).strip()
-
-          app_name = str(
-              data.get("appName", "Web2APK")
-          ).strip()
-
-          icon_url = str(
-              data.get("iconUrl", "")
-          ).strip()
+          build_type = str(data.get("buildType", "release")).lower()
+          url = str(data.get("url", "")).strip()
+          app_name = str(data.get("appName", "Web2APK")).strip()
 
           if mode not in ("zip", "url"):
-              raise SystemExit(
-                  f"Unsupported mode: {mode}"
-              )
+              raise SystemExit(f"Unsupported mode: {mode}")
 
           if build_type not in ("release", "debug"):
               build_type = "release"
 
           if not url:
-              raise SystemExit(
-                  "payload.url is required"
-              )
+              raise SystemExit("payload.url is required")
 
           safe = "".join(
               c if c.isalnum() else "_"
@@ -100,24 +89,20 @@ jobs:
 
           safe = safe[:40].lower()
 
-          with open(
-              os.environ["GITHUB_OUTPUT"],
-              "a"
-          ) as f:
-
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"mode={mode}\n")
               f.write(f"build_type={build_type}\n")
               f.write(f"url={url}\n")
               f.write(f"app_name={app_name}\n")
-              f.write(f"icon_url={icon_url}\n")
               f.write(f"project_name={safe}\n")
           PY
 
-      # ==========================================================
-      # PACKAGES
-      # ==========================================================
 
-      - name: Install system packages
+      # ============================================================
+      # SYSTEM
+      # ============================================================
+
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -131,11 +116,12 @@ jobs:
             jq \
             python3 \
             file \
-            imagemagick
+            sed
 
-      # ==========================================================
-      # JAVA
-      # ==========================================================
+
+      # ============================================================
+      # JAVA 17
+      # ============================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -143,9 +129,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # ==========================================================
+
+      # ============================================================
       # FLUTTER
-      # ==========================================================
+      # ============================================================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -153,20 +140,24 @@ jobs:
           channel: stable
           cache: true
 
+
       - name: Check environment
+        shell: bash
         run: |
           flutter --version
           dart --version
           java -version
 
-      # ==========================================================
-      # ZIP BUILD
-      # ==========================================================
+
+      # ============================================================
+      # DOWNLOAD SOURCE
+      # ============================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
         env:
           SOURCE_URL: ${{ steps.payload.outputs.url }}
+
         shell: bash
         run: |
           set -euo pipefail
@@ -174,7 +165,11 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
-          curl -fL \
+          echo "Downloading:"
+          echo "$SOURCE_URL"
+
+          curl \
+            -fL \
             --retry 5 \
             --retry-delay 3 \
             --connect-timeout 30 \
@@ -189,38 +184,45 @@ jobs:
             -d "$GITHUB_WORKSPACE/project"
 
           ROOT="$(
-            find \
-              "$GITHUB_WORKSPACE/project" \
+            find "$GITHUB_WORKSPACE/project" \
               -name pubspec.yaml \
               -type f \
-              -print -quit |
-            xargs -r dirname
+              -print \
+              -quit |
+              xargs -r dirname
           )"
 
           if [ -z "${ROOT:-}" ]; then
             echo "::error::pubspec.yaml tidak ditemukan."
+
             find "$GITHUB_WORKSPACE/project" \
-              -maxdepth 5 \
+              -maxdepth 6 \
               -type f |
               head -300
+
             exit 1
           fi
 
-          echo "PROJECT_ROOT=$ROOT" \
-            >> "$GITHUB_ENV"
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
 
-          echo "Project: $ROOT"
+          echo "================================"
+          echo "PROJECT ROOT:"
+          echo "$ROOT"
+          echo "================================"
 
-      # ==========================================================
-      # URL BUILD
-      # ==========================================================
+
+      # ============================================================
+      # URL MODE
+      # ============================================================
 
       - name: Create Web2APK project
         if: steps.payload.outputs.mode == 'url'
+
         env:
           PROJECT_NAME: ${{ steps.payload.outputs.project_name }}
           APP_NAME: ${{ steps.payload.outputs.app_name }}
           TARGET_URL: ${{ steps.payload.outputs.url }}
+
         shell: bash
         run: |
           set -euo pipefail
@@ -231,8 +233,7 @@ jobs:
             --platforms=android \
             "$PROJECT_NAME"
 
-          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/$PROJECT_NAME" \
-            >> "$GITHUB_ENV"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/$PROJECT_NAME" >> "$GITHUB_ENV"
 
           cd "$GITHUB_WORKSPACE/$PROJECT_NAME"
 
@@ -272,9 +273,7 @@ jobs:
               super.initState();
 
               controller = WebViewController()
-                ..setJavaScriptMode(
-                  JavaScriptMode.unrestricted
-                )
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..loadRequest(
                   Uri.parse('{url}')
                 );
@@ -288,7 +287,7 @@ jobs:
                 home: Scaffold(
                   body: SafeArea(
                     child: WebViewWidget(
-                      controller: controller
+                      controller: controller,
                     ),
                   ),
                 ),
@@ -303,110 +302,198 @@ jobs:
           )
           PY
 
-      # ==========================================================
-      # CRITICAL GRADLE FIX
-      # ==========================================================
 
-      - name: Repair Android Gradle properties
+      # ============================================================
+      # FIX ANDROID GRADLE
+      # ============================================================
+
+      - name: Fix Android Gradle configuration
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
 
+          echo "======================================"
+          echo "ANDROID PROJECT"
+          echo "======================================"
+
+          find android -maxdepth 3 -type f \
+            \( -name "*.gradle" -o -name "*.gradle.kts" -o -name "gradle.properties" \) \
+            -print
+
+
+          # --------------------------------------------------------
+          # gradle.properties
+          # --------------------------------------------------------
+
           mkdir -p android
 
-          PROPERTY_FILE="android/gradle.properties"
-
-          if [ -f "$PROPERTY_FILE" ]; then
-
-            # Normalize CRLF -> LF
-            sed -i 's/\r$//' "$PROPERTY_FILE"
-
-          else
-
-            touch "$PROPERTY_FILE"
-
-          fi
+          touch android/gradle.properties
 
           python3 - <<'PY'
           from pathlib import Path
 
           p = Path("android/gradle.properties")
 
-          if p.exists():
-              raw = p.read_text(
-                  encoding="utf-8",
-                  errors="replace"
-              )
-          else:
-              raw = ""
+          text = p.read_text(
+              encoding="utf-8",
+              errors="replace"
+          )
 
-          # Normalize all line endings.
-          raw = raw.replace("\r\n", "\n")
-          raw = raw.replace("\r", "\n")
+          text = text.replace("\r\n", "\n")
+          text = text.replace("\r", "\n")
 
-          # Fix the exact corruption caused by previous workflow.
-          raw = raw.replace(
+          # Fix corruption from previous workflow
+          text = text.replace(
               "falseandroid.newDsl=false",
               "false\nandroid.newDsl=false"
           )
 
-          raw = raw.replace(
+          text = text.replace(
               "falseandroid.builtInKotlin=false",
               "false\nandroid.builtInKotlin=false"
           )
 
-          # Remove existing versions of the properties.
           lines = []
 
-          for line in raw.split("\n"):
+          for line in text.split("\n"):
 
               stripped = line.strip()
 
-              if stripped.startswith(
-                  "android.newDsl="
-              ):
+              if stripped.startswith("android.newDsl="):
                   continue
 
-              if stripped.startswith(
-                  "android.builtInKotlin="
-              ):
+              if stripped.startswith("android.builtInKotlin="):
                   continue
 
               lines.append(line)
 
-          # Remove trailing blank lines.
           while lines and not lines[-1].strip():
               lines.pop()
 
-          # Add clean properties.
-          lines.append(
-              "android.newDsl=false"
-          )
-
-          lines.append(
-              "android.builtInKotlin=false"
-          )
+          lines.append("android.newDsl=false")
+          lines.append("android.builtInKotlin=false")
 
           p.write_text(
               "\n".join(lines) + "\n",
-              encoding="utf-8",
-              newline="\n"
+              encoding="utf-8"
           )
           PY
 
+
+          # --------------------------------------------------------
+          # settings.gradle / settings.gradle.kts
+          # --------------------------------------------------------
+
+          if [ -f android/settings.gradle.kts ]; then
+
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("android/settings.gradle.kts")
+          s = p.read_text(encoding="utf-8")
+
+          # AGP 9.x -> AGP 8.7.3
+          s = re.sub(
+              r'id\(["\']com\.android\.application["\']\)\s+version\s+["\']9\.[^"\']+["\']',
+              'id("com.android.application") version "8.7.3"',
+              s
+          )
+
+          s = re.sub(
+              r'id\(["\']com\.android\.library["\']\)\s+version\s+["\']9\.[^"\']+["\']',
+              'id("com.android.library") version "8.7.3"',
+              s
+          )
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+          fi
+
+
+          if [ -f android/settings.gradle ]; then
+
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("android/settings.gradle")
+          s = p.read_text(encoding="utf-8")
+
+          s = re.sub(
+              r'id\s+["\']com\.android\.application["\']\s+version\s+["\']9\.[^"\']+["\']',
+              'id "com.android.application" version "8.7.3"',
+              s
+          )
+
+          s = re.sub(
+              r'id\s+["\']com\.android\.library["\']\s+version\s+["\']9\.[^"\']+["\']',
+              'id "com.android.library" version "8.7.3"',
+              s
+          )
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+          fi
+
+
+          # --------------------------------------------------------
+          # gradle-wrapper.properties
+          # --------------------------------------------------------
+
+          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
+
+            sed -i \
+              -E 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-all.zip#' \
+              android/gradle/wrapper/gradle-wrapper.properties
+
+          fi
+
+
+          # --------------------------------------------------------
+          # Verify
+          # --------------------------------------------------------
+
           echo ""
-          echo "========== gradle.properties =========="
+          echo "======================================"
+          echo "gradle.properties"
+          echo "======================================"
+
           cat -n android/gradle.properties
-          echo "======================================="
 
-          # Verify that values are actually valid.
-          if grep -q \
+          echo ""
+          echo "======================================"
+          echo "gradle-wrapper.properties"
+          echo "======================================"
+
+          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
+            cat android/gradle/wrapper/gradle-wrapper.properties
+          fi
+
+          echo ""
+          echo "======================================"
+          echo "settings.gradle"
+          echo "======================================"
+
+          if [ -f android/settings.gradle ]; then
+            cat android/settings.gradle
+          fi
+
+          if [ -f android/settings.gradle.kts ]; then
+            cat android/settings.gradle.kts
+          fi
+
+
+          # HARD CHECK
+          if grep -Rqs \
             "android.enableJetifier=falseandroid" \
-            android/gradle.properties; then
+            android; then
 
-            echo "::error::gradle.properties masih corrupt."
+            echo "::error::gradle.properties corrupt."
             exit 1
           fi
 
@@ -414,17 +501,19 @@ jobs:
             "android.newDsl=false" \
             android/gradle.properties; then
 
-            echo "::error::android.newDsl=false tidak ditemukan."
+            echo "::error::android.newDsl=false missing."
             exit 1
           fi
 
-      # ==========================================================
-      # ANDROID CONFIG
-      # ==========================================================
 
-      - name: Configure Android
+      # ============================================================
+      # ANDROID APP CONFIG
+      # ============================================================
+
+      - name: Configure Android app
         env:
           APP_NAME: ${{ steps.payload.outputs.app_name }}
+
         shell: bash
         run: |
           set -euo pipefail
@@ -443,6 +532,11 @@ jobs:
               .replace("\\", "\\\\")
               .replace('"', '\\"')
           )
+
+
+          # --------------------------------------------------------
+          # Manifest
+          # --------------------------------------------------------
 
           manifest = Path(
               "android/app/src/main/AndroidManifest.xml"
@@ -466,6 +560,11 @@ jobs:
                   encoding="utf-8"
               )
 
+
+          # --------------------------------------------------------
+          # build.gradle
+          # --------------------------------------------------------
+
           gradle = Path(
               "android/app/build.gradle"
           )
@@ -486,6 +585,11 @@ jobs:
                   s,
                   encoding="utf-8"
               )
+
+
+          # --------------------------------------------------------
+          # build.gradle.kts
+          # --------------------------------------------------------
 
           gradle_kts = Path(
               "android/app/build.gradle.kts"
@@ -509,9 +613,10 @@ jobs:
               )
           PY
 
-      # ==========================================================
+
+      # ============================================================
       # GRADLE CACHE
-      # ==========================================================
+      # ============================================================
 
       - name: Restore Gradle cache
         uses: actions/cache@v4
@@ -519,13 +624,16 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
+
           key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
+
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # ==========================================================
-      # FLUTTER
-      # ==========================================================
+
+      # ============================================================
+      # CLEAN
+      # ============================================================
 
       - name: Flutter clean
         shell: bash
@@ -539,6 +647,11 @@ jobs:
           rm -rf .dart_tool
           rm -rf build
 
+
+      # ============================================================
+      # PUB GET
+      # ============================================================
+
       - name: Flutter pub get
         shell: bash
         run: |
@@ -548,18 +661,24 @@ jobs:
 
           flutter pub get
 
-      # ==========================================================
+
+      # ============================================================
       # BUILD
-      # ==========================================================
+      # ============================================================
 
       - name: Build APK
         env:
           BUILD_TYPE: ${{ steps.payload.outputs.build_type }}
+
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
+
+          echo "======================================"
+          echo "BUILDING APK"
+          echo "======================================"
 
           if [ "$BUILD_TYPE" = "debug" ]; then
 
@@ -575,9 +694,10 @@ jobs:
 
           fi
 
-      # ==========================================================
-      # COLLECT
-      # ==========================================================
+
+      # ============================================================
+      # COLLECT APK
+      # ============================================================
 
       - name: Collect APK
         shell: bash
@@ -587,50 +707,55 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/output"
 
           APK="$(
-            find \
-              "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
+            find "$PROJECT_ROOT/build/app/outputs/flutter-apk" \
               -type f \
-              -name "*.apk" |
-            head -n 1
+              -name "*.apk" \
+              -print \
+              -quit
           )"
 
           if [ -z "${APK:-}" ]; then
 
             echo "::error::APK tidak ditemukan."
 
-            find \
-              "$PROJECT_ROOT/build" \
+            find "$PROJECT_ROOT/build" \
               -type f 2>/dev/null |
-            head -300
+              head -300
 
             exit 1
           fi
 
-          cp \
-            "$APK" \
+          cp "$APK" \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-          echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
+          echo \
+            "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
             >> "$GITHUB_ENV"
 
           ls -lh \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-      # ==========================================================
-      # ARTIFACT
-      # ==========================================================
+
+      # ============================================================
+      # UPLOAD APK
+      # ============================================================
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
+
         with:
           name: apk-${{ inputs.jobId }}
-          path: output/app-${{ inputs.jobId }}.apk
+
+          path: |
+            output/app-${{ inputs.jobId }}.apk
+
           if-no-files-found: error
           retention-days: 3
 
-      # ==========================================================
+
+      # ============================================================
       # SUMMARY
-      # ==========================================================
+      # ============================================================
 
       - name: Build summary
         if: always()
@@ -647,4 +772,5 @@ jobs:
             if [ -f "${APK:-}" ]; then
               echo "- APK size: $(du -h "$APK" | cut -f1)"
             fi
+
           } >> "$GITHUB_STEP_SUMMARY"
