@@ -20,10 +20,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GRADLE_VERSION: "8.11.1"
-  FLUTTER_VERSION: "3.35.7"
-
 concurrency:
   group: scbuild-${{ inputs.jobId }}
   cancel-in-progress: false
@@ -40,35 +36,28 @@ jobs:
       PAYLOAD: ${{ inputs.payload }}
 
     steps:
-      # Tidak perlu checkout: source APK datang dari payload.url.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y unzip curl wget jq python3 file
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: "3.35.7"
           channel: stable
           cache: true
-
-      - name: Cache Flutter packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.pub-cache
-          key: scbuild-pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
-          restore-keys: |
-            scbuild-pub-${{ runner.os }}-
-
-      - name: Cache manual Gradle
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/scbuild/gradle-${{ env.GRADLE_VERSION }}
-          key: scbuild-gradle-${{ runner.os }}-${{ env.GRADLE_VERSION }}
 
       - name: Verify toolchain
         shell: bash
@@ -109,9 +98,7 @@ jobs:
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/input" "$GITHUB_WORKSPACE/project"
           mkdir -p "$GITHUB_WORKSPACE/input" "$GITHUB_WORKSPACE/project"
-          curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
-            --connect-timeout 20 --max-time 900 \
-            "$SOURCE_URL" -o "$GITHUB_WORKSPACE/input/source.zip"
+          curl -fL --retry 5 --retry-all-errors --retry-delay 3             --connect-timeout 30 --max-time 900             "$SOURCE_URL" -o "$GITHUB_WORKSPACE/input/source.zip"
           test -s "$GITHUB_WORKSPACE/input/source.zip"
           unzip -q "$GITHUB_WORKSPACE/input/source.zip" -d "$GITHUB_WORKSPACE/project"
 
@@ -122,6 +109,7 @@ jobs:
           ROOT="$(find "$GITHUB_WORKSPACE/project" -type f -name "pubspec.yaml" -not -path "*/.dart_tool/*" -print -quit | xargs -r dirname)"
           if [ -z "${ROOT:-}" ]; then
             echo "::error::pubspec.yaml tidak ditemukan."
+            find "$GITHUB_WORKSPACE/project" -maxdepth 5 -type f -print | head -300
             exit 1
           fi
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
@@ -151,6 +139,7 @@ jobs:
           lines.append("android.builtInKotlin=false")
           p.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
+          cat android/gradle.properties
 
       - name: Prepare Gradle
         shell: bash
@@ -164,33 +153,39 @@ jobs:
             exit 0
           fi
 
-          GRADLE_VERSION="${GRADLE_VERSION}"
-          GRADLE_HOME="$HOME/.cache/scbuild/gradle-$GRADLE_VERSION"
-          GRADLE_ZIP="$HOME/.cache/scbuild/gradle-$GRADLE_VERSION.zip"
-          GRADLE_TMP="$HOME/.cache/scbuild/gradle-unpack-$GRADLE_VERSION"
+          echo "Source has no executable Gradle wrapper."
 
-          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
-            rm -rf "$GRADLE_TMP"
-            mkdir -p "$GRADLE_TMP" "$(dirname "$GRADLE_HOME")"
+          GRADLE_VERSION="8.11.1"
+          GRADLE_HOME="$RUNNER_TEMP/gradle-$GRADLE_VERSION"
+          GRADLE_ZIP="$RUNNER_TEMP/gradle-$GRADLE_VERSION.zip"
+          GRADLE_TMP="$RUNNER_TEMP/gradle-unpack-$GRADLE_VERSION"
 
-            if [ ! -s "$GRADLE_ZIP" ]; then
-              curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
-                --connect-timeout 20 --max-time 900 \
-                "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
-                -o "$GRADLE_ZIP"
-            fi
+          rm -rf "$GRADLE_HOME" "$GRADLE_TMP" "$GRADLE_ZIP"
+          mkdir -p "$GRADLE_TMP"
 
-            unzip -q -o "$GRADLE_ZIP" -d "$GRADLE_TMP"
-            rm -rf "$GRADLE_HOME"
-            mkdir -p "$GRADLE_HOME"
-            cp -a "$GRADLE_TMP/gradle-$GRADLE_VERSION/." "$GRADLE_HOME/"
-            rm -rf "$GRADLE_TMP"
+          curl -fL --retry 5 --retry-all-errors --retry-delay 3             --connect-timeout 30 --max-time 900             "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"             -o "$GRADLE_ZIP"
+
+          test -s "$GRADLE_ZIP"
+          unzip -q "$GRADLE_ZIP" -d "$GRADLE_TMP"
+
+          if [ ! -x "$GRADLE_TMP/gradle-$GRADLE_VERSION/bin/gradle" ]; then
+            echo "::error::Gradle extraction failed."
+            find "$GRADLE_TMP" -maxdepth 3 -type f -print
+            exit 1
           fi
 
-          test -x "$GRADLE_HOME/bin/gradle"
+          mkdir -p "$GRADLE_HOME"
+          cp -a "$GRADLE_TMP/gradle-$GRADLE_VERSION/." "$GRADLE_HOME/"
+
+          if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
+            echo "::error::Gradle executable was not installed."
+            exit 1
+          fi
+
           echo "GRADLE_HOME=$GRADLE_HOME" >> "$GITHUB_ENV"
 
           mkdir -p android/gradle/wrapper
+
           cat > android/gradlew <<EOF
           #!/bin/sh
           set -e
@@ -198,7 +193,25 @@ jobs:
           EOF
           chmod +x android/gradlew
 
+          cat > android/gradle/wrapper/gradle-wrapper.properties <<EOF
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-all.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
           "$GRADLE_HOME/bin/gradle" --version
+
+      - name: Flutter clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+          flutter clean
+          rm -rf .dart_tool build
 
       - name: Flutter pub get
         shell: bash
@@ -228,6 +241,7 @@ jobs:
           APK="$(find "$PROJECT_ROOT/build/app/outputs/flutter-apk" -type f -name "*.apk" -print -quit)"
           if [ -z "${APK:-}" ]; then
             echo "::error::APK tidak ditemukan."
+            find "$PROJECT_ROOT/build" -type f -name "*.apk" -print 2>/dev/null || true
             exit 1
           fi
           cp "$APK" "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
@@ -240,8 +254,7 @@ jobs:
           name: apk-${{ inputs.jobId }}
           path: output/app-${{ inputs.jobId }}.apk
           if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+          retention-days: 3
 
       - name: Build summary
         if: always()
