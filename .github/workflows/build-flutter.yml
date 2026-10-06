@@ -9,7 +9,7 @@ on:
         type: string
 
       userId:
-        description: "Telegram user ID"
+        description: "User ID"
         required: false
         default: "0"
         type: string
@@ -39,16 +39,16 @@ jobs:
 
     steps:
 
-      # ==========================================================
+      # ============================================================
       # CHECKOUT
-      # ==========================================================
+      # ============================================================
 
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==========================================================
+      # ============================================================
       # PARSE PAYLOAD
-      # ==========================================================
+      # ============================================================
 
       - name: Parse payload
         id: payload
@@ -62,7 +62,10 @@ jobs:
 
           data = json.loads(os.environ["PAYLOAD"])
 
-          mode = str(data.get("mode", "zip")).lower()
+          mode = str(
+              data.get("mode", "zip")
+          ).lower()
+
           build_type = str(
               data.get("buildType", "release")
           ).lower()
@@ -108,7 +111,6 @@ jobs:
               os.environ["GITHUB_OUTPUT"],
               "a"
           ) as f:
-
               f.write(
                   f"mode={mode}\n"
               )
@@ -134,9 +136,9 @@ jobs:
               )
           PY
 
-      # ==========================================================
-      # TOOLS
-      # ==========================================================
+      # ============================================================
+      # SYSTEM PACKAGES
+      # ============================================================
 
       - name: Install system packages
         shell: bash
@@ -151,15 +153,12 @@ jobs:
             curl \
             jq \
             python3 \
+            file \
             imagemagick
 
-      # ==========================================================
+      # ============================================================
       # JAVA
-      #
-      # IMPORTANT:
-      # No Gradle cache here because the Flutter project has not
-      # been downloaded yet.
-      # ==========================================================
+      # ============================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -167,9 +166,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # ==========================================================
+      # ============================================================
       # FLUTTER
-      # ==========================================================
+      # ============================================================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -184,9 +183,9 @@ jobs:
           dart --version
           java -version
 
-      # ==========================================================
+      # ============================================================
       # ZIP MODE
-      # ==========================================================
+      # ============================================================
 
       - name: Download source ZIP
         if: steps.payload.outputs.mode == 'zip'
@@ -199,7 +198,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/input"
           mkdir -p "$GITHUB_WORKSPACE/project"
 
-          echo "Downloading source..."
+          echo "Downloading source ZIP..."
 
           curl -fL \
             --retry 5 \
@@ -209,7 +208,10 @@ jobs:
             "$SOURCE_URL" \
             -o "$GITHUB_WORKSPACE/input/source.zip"
 
-          test -s "$GITHUB_WORKSPACE/input/source.zip"
+          if [ ! -s "$GITHUB_WORKSPACE/input/source.zip" ]; then
+            echo "::error::Source ZIP kosong."
+            exit 1
+          fi
 
           echo "Extracting source..."
 
@@ -217,7 +219,7 @@ jobs:
             "$GITHUB_WORKSPACE/input/source.zip" \
             -d "$GITHUB_WORKSPACE/project"
 
-          echo "Searching Flutter project..."
+          echo "Searching pubspec.yaml..."
 
           ROOT="$(
             find \
@@ -229,29 +231,30 @@ jobs:
           )"
 
           if [ -z "${ROOT:-}" ]; then
-            echo "::error::pubspec.yaml tidak ditemukan di source ZIP."
 
-            echo "ZIP CONTENT:"
+            echo "::error::pubspec.yaml tidak ditemukan."
+
+            echo "SOURCE CONTENT:"
             find \
               "$GITHUB_WORKSPACE/project" \
-              -maxdepth 4 \
+              -maxdepth 5 \
               -type f |
-            head -200
+            head -300
 
             exit 1
           fi
 
-          echo "================================"
-          echo "Flutter project:"
+          echo "======================================"
+          echo "FLUTTER PROJECT:"
           echo "$ROOT"
-          echo "================================"
+          echo "======================================"
 
           echo "PROJECT_ROOT=$ROOT" \
             >> "$GITHUB_ENV"
 
-      # ==========================================================
+      # ============================================================
       # URL MODE
-      # ==========================================================
+      # ============================================================
 
       - name: Create Web2APK project
         if: steps.payload.outputs.mode == 'url'
@@ -361,24 +364,45 @@ jobs:
           )
           PY
 
-      # ==========================================================
-      # NOW PROJECT EXISTS
-      # ENABLE GRADLE CACHE MANUALLY
-      # ==========================================================
+      # ============================================================
+      # AGP 9 COMPATIBILITY FIX
+      # ============================================================
 
-      - name: Restore Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+      - name: Fix Flutter AGP 9 compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      # ==========================================================
+          cd "$PROJECT_ROOT"
+
+          mkdir -p android
+
+          touch android/gradle.properties
+
+          # Remove old/conflicting values
+          sed -i \
+            '/^[[:space:]]*android\.newDsl[[:space:]]*=/d' \
+            android/gradle.properties || true
+
+          sed -i \
+            '/^[[:space:]]*android\.builtInKotlin[[:space:]]*=/d' \
+            android/gradle.properties || true
+
+          # AGP 9 compatibility
+          echo "android.newDsl=false" \
+            >> android/gradle.properties
+
+          echo "android.builtInKotlin=false" \
+            >> android/gradle.properties
+
+          echo ""
+          echo "===== android/gradle.properties ====="
+          cat android/gradle.properties
+          echo "======================================"
+
+      # ============================================================
       # ANDROID CONFIG
-      # ==========================================================
+      # ============================================================
 
       - name: Configure Android
         env:
@@ -402,6 +426,7 @@ jobs:
               .replace('"', '\\"')
           )
 
+          # AndroidManifest
           manifest = Path(
               "android/app/src/main/AndroidManifest.xml"
           )
@@ -424,6 +449,7 @@ jobs:
                   encoding="utf-8"
               )
 
+          # Groovy Gradle
           gradle = Path(
               "android/app/build.gradle"
           )
@@ -445,6 +471,7 @@ jobs:
                   encoding="utf-8"
               )
 
+          # Kotlin Gradle
           gradle_kts = Path(
               "android/app/build.gradle.kts"
           )
@@ -467,11 +494,25 @@ jobs:
               )
           PY
 
-      # ==========================================================
-      # DEPENDENCIES
-      # ==========================================================
+      # ============================================================
+      # GRADLE CACHE
+      # ============================================================
 
-      - name: Flutter dependencies
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ============================================================
+      # DOWNLOAD DEPENDENCIES
+      # ============================================================
+
+      - name: Flutter clean
         shell: bash
         run: |
           set -euo pipefail
@@ -483,17 +524,22 @@ jobs:
           rm -rf .dart_tool
           rm -rf build
 
-          flutter pub get
-
-      # ==========================================================
-      # VALIDATE
-      # ==========================================================
-
-      - name: Validate Flutter project
+      - name: Flutter pub get
         shell: bash
         run: |
           set -euo pipefail
 
+          cd "$PROJECT_ROOT"
+
+          flutter pub get
+
+      # ============================================================
+      # ANALYZE
+      # ============================================================
+
+      - name: Analyze project
+        shell: bash
+        run: |
           cd "$PROJECT_ROOT"
 
           dart format lib || true
@@ -502,9 +548,9 @@ jobs:
             --no-fatal-infos \
             --no-fatal-warnings || true
 
-      # ==========================================================
-      # BUILD APK
-      # ==========================================================
+      # ============================================================
+      # BUILD
+      # ============================================================
 
       - name: Build APK
         env:
@@ -514,6 +560,8 @@ jobs:
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
+
+          echo "BUILD TYPE: $BUILD_TYPE"
 
           if [ "$BUILD_TYPE" = "debug" ]; then
 
@@ -529,9 +577,9 @@ jobs:
 
           fi
 
-      # ==========================================================
-      # COLLECT APK
-      # ==========================================================
+      # ============================================================
+      # FIND APK
+      # ============================================================
 
       - name: Collect APK
         shell: bash
@@ -552,6 +600,7 @@ jobs:
 
             echo "::error::APK hasil build tidak ditemukan."
 
+            echo "BUILD DIRECTORY:"
             find \
               "$PROJECT_ROOT/build" \
               -type f 2>/dev/null |
@@ -560,7 +609,7 @@ jobs:
             exit 1
           fi
 
-          echo "APK ditemukan:"
+          echo "APK FOUND:"
           echo "$APK"
 
           cp \
@@ -570,12 +619,14 @@ jobs:
           echo "APK=$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk" \
             >> "$GITHUB_ENV"
 
+          echo ""
+          echo "FINAL APK:"
           ls -lh \
             "$GITHUB_WORKSPACE/output/app-${JOB_ID}.apk"
 
-      # ==========================================================
-      # UPLOAD ARTIFACT
-      # ==========================================================
+      # ============================================================
+      # ARTIFACT
+      # ============================================================
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -585,9 +636,9 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      # ==========================================================
+      # ============================================================
       # SUMMARY
-      # ==========================================================
+      # ============================================================
 
       - name: Build summary
         if: always()
