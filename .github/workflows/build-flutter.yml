@@ -31,6 +31,28 @@ jobs:
         with:
           flutter-version: '3.38.0'
           channel: 'stable'
+          cache: true
+
+      # Cache Dart packages between builds. The project arrives as a ZIP,
+      # so use a run-specific key with a stable restore prefix.
+      - name: Cache Pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: flutter-pub-${{ runner.os }}-3.38.0-${{ github.run_id }}
+          restore-keys: |
+            flutter-pub-${{ runner.os }}-3.38.0-
+
+      # Reuse Gradle dependencies and wrapper distributions across runs.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-jdk17-${{ github.run_id }}
+          restore-keys: |
+            gradle-${{ runner.os }}-jdk17-
 
       - name: Prepare Project
         env:
@@ -91,7 +113,8 @@ jobs:
         run: |
           set -e
           cd "$PROJECT_ROOT"
-          flutter clean
+          # The source is freshly extracted for each job, so `flutter clean`
+          # is unnecessary and can remove reusable build outputs.
           flutter pub get
           flutter build apk "--$BUILD_TYPE"
 
