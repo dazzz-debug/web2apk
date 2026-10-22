@@ -76,20 +76,36 @@ jobs:
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
           echo "Detected Flutter project root: $PROJECT_ROOT"
 
+      - name: Determine Build Type
+        run: |
+          set -e
+          BUILD_TYPE=$(jq -r '.buildType // .payload.buildType // "release"' payload.json)
+          if [ "$BUILD_TYPE" != "debug" ] && [ "$BUILD_TYPE" != "release" ]; then
+            echo "::error::Build type tidak valid: $BUILD_TYPE"
+            exit 1
+          fi
+          echo "BUILD_TYPE=$BUILD_TYPE" >> "$GITHUB_ENV"
+          echo "Build type: $BUILD_TYPE"
+
       - name: Build APK
         run: |
           set -e
           cd "$PROJECT_ROOT"
           flutter clean
           flutter pub get
-          flutter build apk --release
+          flutter build apk "--$BUILD_TYPE"
 
       - name: Locate APK
         run: |
           set -e
-          APK_PATH=$(find "$PROJECT_ROOT" -type f -name "app-release.apk" -path "*/flutter-apk/*" | head -n 1)
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            APK_NAME="app-debug.apk"
+          else
+            APK_NAME="app-release.apk"
+          fi
+          APK_PATH=$(find "$PROJECT_ROOT" -type f -name "$APK_NAME" -path "*/flutter-apk/*" | head -n 1)
           if [ -z "$APK_PATH" ]; then
-            echo "::error::app-release.apk tidak ditemukan setelah build."
+            echo "::error::$APK_NAME tidak ditemukan setelah build $BUILD_TYPE."
             find "$PROJECT_ROOT/build" -maxdepth 5 2>/dev/null || true
             exit 1
           fi
